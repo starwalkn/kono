@@ -17,7 +17,7 @@ pipeline {
         stage('Setup Go') {
             steps {
                 sh '''
-                    wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                    curl -LO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                     sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
                     export PATH=$PATH:/usr/local/go/bin
                     go version
