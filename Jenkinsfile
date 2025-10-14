@@ -17,8 +17,8 @@ pipeline {
         stage('Build Go binary') {
             steps {
                 sh 'mkdir -p build'
-                sh 'go mod tidy'
-                sh 'go build -o build/kairyu ./cmd/kairyu'
+                sh '/opt/homebrew/bin/go mod tidy'
+                sh '/opt/homebrew/bin/go build -o build/kairyu ./cmd/kairyu'
             }
         }
 
