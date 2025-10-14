@@ -26,9 +26,11 @@ pipeline {
         }
 
         stage('Build') {
+            agent {
+                docker { image 'golang:1.23-alpine' }
+            }
             steps {
-                sh 'go mod tidy'
-                sh 'go build -o build/kairyu ./cmd/kairyu'
+                sh 'go build -o /app/kairyu ./cmd/main'
             }
         }
 
