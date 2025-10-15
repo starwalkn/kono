@@ -26,7 +26,7 @@ pipeline {
                         pwd
                         ls -l
 
-                        /usr/local/bin/docker build --platform linux/arm64 -f ./build/Dockerfile -t $DOCKER_IMAGE:latest .
+                        /usr/local/bin/docker build --platform linux/amd64 -f ./build/Dockerfile -t $DOCKER_IMAGE:latest .
                         /usr/local/bin/docker push $DOCKER_IMAGE:latest
 
                         rm -rf $DOCKER_CONFIG
