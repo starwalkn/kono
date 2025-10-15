@@ -33,7 +33,7 @@ pipeline {
 
                         pwd
 
-                        /usr/local/bin/docker build -f kairyu/build/Dockerfile -t $DOCKER_IMAGE:latest kairyu/
+                        /usr/local/bin/docker build -f ./build/Dockerfile -t $DOCKER_IMAGE:latest ./build
                         /usr/local/bin/docker push $DOCKER_IMAGE:latest
 
                         rm -rf $DOCKER_CONFIG
