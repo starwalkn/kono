@@ -32,6 +32,8 @@ jobs:
         run: go test -v ./...
 
   docker:
+    if: startsWith(github.ref, 'refs/tags/v')
+
     runs-on: ubuntu-22.04
     needs: checks
     steps:
