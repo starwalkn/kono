@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,7 +120,6 @@ func (d *defaultDispatcher) resolveQueryStrings(b Backend, target, original *htt
 }
 
 func (d *defaultDispatcher) resolveHeaders(b Backend, target, original *http.Request) {
-	// TODO:: implement headers pattern aka "X-*" (forward all headers which starts with 'X-').
 	// Set forwarding headers.
 	for _, fw := range b.ForwardHeaders {
 		if fw == "*" {
@@ -127,11 +127,23 @@ func (d *defaultDispatcher) resolveHeaders(b Backend, target, original *http.Req
 			break
 		}
 
-		if original.Header.Get(fw) == "" {
+		if strings.HasSuffix(fw, "*") {
+			prefix := strings.TrimSuffix(fw, "*")
+
+			for name, values := range original.Header {
+				if strings.HasPrefix(name, prefix) {
+					for _, v := range values {
+						target.Header.Add(name, v)
+					}
+				}
+			}
+
 			continue
 		}
 
-		target.Header.Add(fw, original.Header.Get(fw))
+		if original.Header.Get(fw) != "" {
+			target.Header.Add(fw, original.Header.Get(fw))
+		}
 	}
 
 	// Rewrite headers which exists in backend headers configuration (rewriting only forwarded headers).
@@ -143,5 +155,6 @@ func (d *defaultDispatcher) resolveHeaders(b Backend, target, original *http.Req
 		target.Header.Set(header, value)
 	}
 
+	// Always forward the Content-Type header.
 	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
 }

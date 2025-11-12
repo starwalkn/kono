@@ -34,24 +34,39 @@ routes:
         forward_query_strings:
           - "*"
         forward_headers:
-          - "*"
+          - "X-*"
       - url: http://profile-service.local/v1/details
         method: GET
         forward_headers:
-          - X-Request-ID
+          - "X-Request-ID"
     aggregate: merge
     transform: default
     allow_partial_results: true
 
   - path: /api/domains
     method: GET
-    middlewares: [ ]
+    middlewares:
+      - name: recoverer
+        path: /bravka/middlewares/recoverer.so
+        can_fail_on_load: true
+      - name: logger
+        path: /bravka/middlewares/logger.so
+        can_fail_on_load: false
     backends:
       - url: http://domain-service.local/v1/domains
         method: GET
         timeout: 3000
+        forward_query_strings:
+          - "*"
+        forward_headers:
+          - "X-For*"
       - url: http://profile-service.local/v1/details
         method: GET
+        timeout: 2000
+        forward_query_strings:
+          - "id"
+        forward_headers:
+          - "X-For"
     aggregate: merge
     transform: default
     allow_partial_results: false
