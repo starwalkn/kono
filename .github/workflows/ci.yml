@@ -63,7 +63,7 @@ jobs:
           echo "![coverage](https://img.shields.io/badge/coverage-${COVERAGE}%25-${COLOR}.svg)" > coverage-badge.md
 
       - name: Upload coverage badge
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-badge
           path: coverage-badge.md
