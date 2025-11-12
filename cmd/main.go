@@ -7,19 +7,19 @@ import (
 	"os"
 	"time"
 
-	"github.com/starwalkn/bravka"
-	"github.com/starwalkn/bravka/dashboard"
+	"github.com/starwalkn/tokka"
+	"github.com/starwalkn/tokka/dashboard"
 
-	_ "github.com/starwalkn/bravka/internal/plugin/ratelimit"
+	_ "github.com/starwalkn/tokka/internal/plugin/ratelimit"
 )
 
 func main() {
-	cfgPath := os.Getenv("BRAVKA_CONFIG")
+	cfgPath := os.Getenv("TOKKA_CONFIG")
 	if cfgPath == "" {
-		cfgPath = "./bravka.json"
+		cfgPath = "./tokka.json"
 	}
 
-	cfg := bravka.LoadConfig(cfgPath)
+	cfg := tokka.LoadConfig(cfgPath)
 
 	if cfg.Dashboard.Enable {
 		adminServer := dashboard.NewServer(&cfg)
@@ -28,7 +28,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      bravka.NewRouter(cfg.Routes),
+		Handler:      tokka.NewRouter(cfg.Routes),
 		ReadTimeout:  time.Duration(cfg.Server.Timeout) * time.Second,
 		WriteTimeout: time.Duration(cfg.Server.Timeout) * time.Second,
 	}

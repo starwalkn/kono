@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/bravka"
-	"github.com/starwalkn/bravka/internal/logger"
+	"github.com/starwalkn/tokka"
+	"github.com/starwalkn/tokka/internal/logger"
 )
 
 type Middleware struct {
@@ -18,7 +18,7 @@ type Middleware struct {
 	log          *zap.Logger
 }
 
-func NewMiddleware() bravka.Middleware {
+func NewMiddleware() tokka.Middleware {
 	return &Middleware{}
 }
 

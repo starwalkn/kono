@@ -1,4 +1,4 @@
-module github.com/starwalkn/bravka
+module github.com/starwalkn/tokka
 
 go 1.24.2
 

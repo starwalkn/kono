@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/starwalkn/bravka"
+	"github.com/starwalkn/tokka"
 )
 
 func init() {
-	bravka.RegisterCorePlugin("metrics", NewPlugin)
+	tokka.RegisterCorePlugin("metrics", NewPlugin)
 }
 
 type Plugin struct {
@@ -19,7 +19,7 @@ type Plugin struct {
 	stopCh chan struct{}
 }
 
-func NewPlugin() bravka.CorePlugin {
+func NewPlugin() tokka.CorePlugin {
 	return &Plugin{
 		counts: make(map[string]int),
 		stopCh: make(chan struct{}),

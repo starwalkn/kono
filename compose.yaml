@@ -1,5 +1,5 @@
 services:
-  bravka:
+  tokka:
     build:
       context: .
       dockerfile: build/Dockerfile
@@ -9,6 +9,6 @@ services:
       - '8090:8090'
       - '8095:8095'
     volumes:
-      - ./bravka.yaml:/app/bravka.yaml
+      - ./tokka.yaml:/app/tokka.yaml
     environment:
-      BRAVKA_CONFIG: ./bravka.yaml
+      TOKKA_CONFIG: ./tokka.yaml

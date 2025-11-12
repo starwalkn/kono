@@ -1,4 +1,4 @@
-package bravka
+package tokka
 
 import (
 	"bytes"
@@ -11,10 +11,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-)
-
-const (
-	internalError = "Internal Error"
 )
 
 type dispatcher interface {
@@ -62,7 +58,7 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]b
 
 			req, reqErr := http.NewRequestWithContext(ctx, m, b.URL, bytes.NewReader(originalBody))
 			if reqErr != nil {
-				results[i] = []byte(internalError)
+				results[i] = []byte(jsonErrInternal)
 				return
 			}
 
@@ -73,7 +69,7 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]b
 
 			resp, reqErr := d.client.Do(req)
 			if reqErr != nil {
-				results[i] = []byte(internalError)
+				results[i] = []byte(jsonErrInternal)
 
 				d.log.Error("backend request failed", zap.String("method", m), zap.Error(reqErr))
 				return
@@ -81,7 +77,7 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]b
 
 			body, reqErr := io.ReadAll(resp.Body)
 			if reqErr != nil {
-				results[i] = []byte(internalError)
+				results[i] = []byte(jsonErrInternal)
 
 				d.log.Error("cannot read backend response body", zap.Error(reqErr))
 				return

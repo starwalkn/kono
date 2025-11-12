@@ -4,11 +4,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/starwalkn/bravka"
+	"github.com/starwalkn/tokka"
 )
 
 func init() {
-	bravka.RegisterCorePlugin("ratelimit", NewPlugin)
+	tokka.RegisterCorePlugin("ratelimit", NewPlugin)
 }
 
 const (
@@ -32,7 +32,7 @@ type Plugin struct {
 	stopped bool
 }
 
-func NewPlugin() bravka.CorePlugin {
+func NewPlugin() tokka.CorePlugin {
 	return &Plugin{}
 }
 

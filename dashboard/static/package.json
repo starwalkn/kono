@@ -1,5 +1,5 @@
 {
-  "name": "bravka-admin",
+  "name": "tokka-admin",
   "version": "0.1.0",
   "scripts": {
     "build": "tsc"

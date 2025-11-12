@@ -7,16 +7,16 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/bravka"
-	"github.com/starwalkn/bravka/internal/logger"
+	"github.com/starwalkn/tokka"
+	"github.com/starwalkn/tokka/internal/logger"
 )
 
 type Server struct {
-	cfg *bravka.GatewayConfig
+	cfg *tokka.GatewayConfig
 	log *zap.Logger
 }
 
-func NewServer(cfg *bravka.GatewayConfig) *Server {
+func NewServer(cfg *tokka.GatewayConfig) *Server {
 	return &Server{
 		cfg: cfg,
 		log: logger.New(true).Named("dashboard"),

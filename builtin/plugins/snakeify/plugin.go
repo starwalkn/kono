@@ -8,14 +8,14 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/starwalkn/bravka"
+	"github.com/starwalkn/tokka"
 )
 
 type Plugin struct {
-	bravka.BasePlugin
+	tokka.BasePlugin
 }
 
-func NewPlugin() bravka.Plugin {
+func NewPlugin() tokka.Plugin {
 	return &Plugin{}
 }
 
@@ -23,13 +23,13 @@ func (p *Plugin) Name() string {
 	return "snakeify"
 }
 
-func (p *Plugin) Type() bravka.PluginType {
-	return bravka.PluginTypeResponse
+func (p *Plugin) Type() tokka.PluginType {
+	return tokka.PluginTypeResponse
 }
 
 func (p *Plugin) Init(_ map[string]interface{}) {}
 
-func (p *Plugin) Execute(ctx bravka.Context) {
+func (p *Plugin) Execute(ctx tokka.Context) {
 	if ctx.Response() == nil || ctx.Response().Body == nil {
 		return
 	}

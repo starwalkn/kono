@@ -1,4 +1,4 @@
-package bravka
+package tokka
 
 import (
 	"bytes"
@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/bravka/internal/logger"
-	"github.com/starwalkn/bravka/internal/plugin/contract"
+	"github.com/starwalkn/tokka/internal/logger"
+	"github.com/starwalkn/tokka/internal/plugin/contract"
 )
 
 type Router struct {
@@ -150,6 +150,7 @@ type Backend struct {
 /*
 ServeHTTP is the incoming requests pipeline:
 
+	├─ execute core plugins
 	├─ execute middlewares
 	├─ match route
 	├─ execute request plugins
@@ -168,7 +169,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 
 			if !limiter.Allow(ip) {
-				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+				http.Error(w, jsonErrRateLimitExceeded, http.StatusTooManyRequests)
 				return
 			}
 		}
@@ -194,13 +195,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			r.log.Debug("executing request plugin", zap.String("name", p.Name()))
 
 			p.Execute(pctx)
-
-			if pctx.Response() != nil && pctx.Response().StatusCode == http.StatusTooManyRequests { //nolint:bodyclose // body closes in copyResponse
-				r.log.Warn("too many requests", zap.String("request_uri", req.URL.RequestURI()))
-				copyResponse(w, pctx.Response()) //nolint:bodyclose // body closes in copyResponse
-
-				return
-			}
 		}
 
 		// --- 2. Backend dispatch ---

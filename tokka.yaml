@@ -1,5 +1,5 @@
 schema: v1
-name: Bravka Gateway
+name: Tokka Gateway
 version: "0.1"
 
 server:
@@ -22,11 +22,15 @@ routes:
     method: GET
     middlewares:
       - name: recoverer
-        path: /bravka/middlewares/recoverer.so
+        path: /tokka/middlewares/recoverer.so
         can_fail_on_load: true
+        config:
+          enabled: true
       - name: logger
-        path: /bravka/middlewares/logger.so
+        path: /tokka/middlewares/logger.so
         can_fail_on_load: false
+        config:
+          enabled: true
     backends:
       - url: http://user-service.local/v1/users
         method: GET
@@ -47,11 +51,15 @@ routes:
     method: GET
     middlewares:
       - name: recoverer
-        path: /bravka/middlewares/recoverer.so
+        path: /tokka/middlewares/recoverer.so
         can_fail_on_load: true
+        config:
+          enabled: true
       - name: logger
-        path: /bravka/middlewares/logger.so
+        path: /tokka/middlewares/logger.so
         can_fail_on_load: false
+        config:
+          enabled: true
     backends:
       - url: http://domain-service.local/v1/domains
         method: GET
@@ -73,7 +81,13 @@ routes:
 
   - path: /api/domains
     method: POST
-    middlewares: [ ]
+    middlewares:
+      - name: compressor
+        path: /tokka/middlewares/compressor.so
+        can_fail_on_load: false
+        config:
+          enabled: true
+          alg: gzip
     plugins: [ ]
     backends:
       - url: http://domain-service.local/v1/domains
@@ -87,7 +101,13 @@ routes:
 
   - path: /api/domains
     method: DELETE
-    middlewares: [ ]
+    middlewares:
+      - name: compressor
+        path: /tokka/middlewares/compressor.so
+        can_fail_on_load: false
+        config:
+          enabled: true
+          alg: deflate
     plugins: [ ]
     backends:
       - url: http://domain-service.local/v1/domains

@@ -1,6 +1,6 @@
 {
   "schema": "v1",
-  "name": "Bravka Gateway",
+  "name": "Tokka Gateway",
   "version": "0.1",
   "server": {
     "port": 8090,
@@ -8,7 +8,8 @@
   },
   "dashboard": {
     "enable": true,
-    "port": 8095
+    "port": 8095,
+    "timeout": 5000
   },
   "plugins": [
     {
@@ -26,15 +27,18 @@
       "middlewares": [
         {
           "name": "recoverer",
-          "path": "/bravka/middlewares/recoverer.so"
-        }
-      ],
-      "plugins": [
+          "path": "/tokka/middlewares/recoverer.so",
+          "can_fail_on_load": true,
+          "config": {
+            "enabled": true
+          }
+        },
         {
           "name": "logger",
-          "path": "/bravka/plugins/logger.so",
+          "path": "/tokka/middlewares/logger.so",
+          "can_fail_on_load": false,
           "config": {
-            "level": "debug"
+            "enabled": true
           }
         }
       ],
@@ -47,7 +51,7 @@
             "*"
           ],
           "forward_headers": [
-            "*"
+            "X-*"
           ]
         },
         {
@@ -59,17 +63,27 @@
         }
       ],
       "aggregate": "merge",
-      "transform": "default"
+      "transform": "default",
+      "allow_partial_results": true
     },
     {
       "path": "/api/domains",
       "method": "GET",
-      "plugins": [
+      "middlewares": [
+        {
+          "name": "recoverer",
+          "path": "/tokka/middlewares/recoverer.so",
+          "can_fail_on_load": true,
+          "config": {
+            "enabled": true
+          }
+        },
         {
           "name": "logger",
-          "path": "/bravka/plugins/logger.so",
+          "path": "/tokka/middlewares/logger.so",
+          "can_fail_on_load": false,
           "config": {
-            "level": "debug"
+            "enabled": true
           }
         }
       ],
@@ -77,19 +91,44 @@
         {
           "url": "http://domain-service.local/v1/domains",
           "method": "GET",
-          "timeout": 3000
+          "timeout": 3000,
+          "forward_query_strings": [
+            "*"
+          ],
+          "forward_headers": [
+            "X-For*"
+          ]
         },
         {
           "url": "http://profile-service.local/v1/details",
-          "method": "GET"
+          "method": "GET",
+          "timeout": 2000,
+          "forward_query_strings": [
+            "id"
+          ],
+          "forward_headers": [
+            "X-For"
+          ]
         }
       ],
       "aggregate": "merge",
-      "transform": "default"
+      "transform": "default",
+      "allow_partial_results": false
     },
     {
       "path": "/api/domains",
       "method": "POST",
+      "middlewares": [
+        {
+          "name": "compressor",
+          "path": "/tokka/middlewares/compressor.so",
+          "can_fail_on_load": false,
+          "config": {
+            "enabled": true,
+            "alg": "gzip"
+          }
+        }
+      ],
       "plugins": [],
       "backends": [
         {
@@ -103,11 +142,23 @@
         }
       ],
       "aggregate": "array",
-      "transform": "default"
+      "transform": "default",
+      "allow_partial_results": false
     },
     {
       "path": "/api/domains",
       "method": "DELETE",
+      "middlewares": [
+        {
+          "name": "compressor",
+          "path": "/tokka/middlewares/compressor.so",
+          "can_fail_on_load": false,
+          "config": {
+            "enabled": true,
+            "alg": "deflate"
+          }
+        }
+      ],
       "plugins": [],
       "backends": [
         {
@@ -121,7 +172,8 @@
         }
       ],
       "aggregate": "array",
-      "transform": "default"
+      "transform": "default",
+      "allow_partial_results": false
     }
   ]
 }

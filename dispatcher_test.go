@@ -1,4 +1,4 @@
-package bravka
+package tokka
 
 import (
 	"bytes"
@@ -71,7 +71,7 @@ func TestDispatcher_Dispatch_Timeout(t *testing.T) {
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
 
 	results := d.dispatch(route, originalRequest)
-	if string(results[0]) != internalError {
+	if string(results[0]) != jsonErrInternal {
 		t.Errorf("expected internalError, got %q", results[0])
 	}
 }

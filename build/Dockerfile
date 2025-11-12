@@ -1,4 +1,4 @@
-# Stage 1: Build Go bravka binary
+# Stage 1: Build Go tokka binary
 FROM golang:1.24.2-bullseye AS builder
 
 WORKDIR /app
@@ -15,10 +15,10 @@ FROM gcr.io/distroless/base-debian12 AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /app/.bin/bravka /bin/bravka
-COPY --from=builder /app/build/plugins /bravka/plugins
-COPY --from=builder /app/build/middlewares /bravka/middlewares
+COPY --from=builder /app/.bin/tokka /bin/tokka
+COPY --from=builder /app/build/plugins /tokka/plugins
+COPY --from=builder /app/build/middlewares /tokka/middlewares
 
 EXPOSE 8090 8095
 
-CMD ["/bin/bravka"]
+CMD ["/bin/tokka"]

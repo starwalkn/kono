@@ -9,7 +9,7 @@ all: build plugins
 
 build:
 	mkdir -p .bin
-	CGO_ENABLED=1 go build -o .bin/bravka ./cmd/main.go
+	CGO_ENABLED=1 go build -o .bin/tokka ./cmd/main.go
 
 plugins:
 	mkdir -p $(PLUGIN_OUT)
