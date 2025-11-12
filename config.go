@@ -10,13 +10,14 @@ import (
 )
 
 type GatewayConfig struct {
-	Schema    string             `json:"schema" yaml:"schema"`
-	Name      string             `json:"name" yaml:"name"`
-	Version   string             `json:"version" yaml:"version"`
-	Server    ServerConfig       `json:"server" yaml:"server"`
-	Dashboard DashboardConfig    `json:"dashboard" yaml:"dashboard"`
-	Plugins   []CorePluginConfig `json:"plugins" yaml:"plugins"`
-	Routes    []RouteConfig      `json:"routes" yaml:"routes"`
+	Schema      string             `json:"schema" yaml:"schema"`
+	Name        string             `json:"name" yaml:"name"`
+	Version     string             `json:"version" yaml:"version"`
+	Server      ServerConfig       `json:"server" yaml:"server"`
+	Dashboard   DashboardConfig    `json:"dashboard" yaml:"dashboard"`
+	Plugins     []CorePluginConfig `json:"plugins" yaml:"plugins"`
+	Middlewares []MiddlewareConfig `json:"middlewares" yaml:"middlewares"`
+	Routes      []RouteConfig      `json:"routes" yaml:"routes"`
 }
 
 type ServerConfig struct {
@@ -61,6 +62,7 @@ type MiddlewareConfig struct {
 	Path          string                 `json:"path,omitempty" yaml:"path,omitempty"`
 	Config        map[string]interface{} `json:"config" yaml:"config"`
 	CanFailOnLoad bool                   `json:"can_fail_on_load" yaml:"can_fail_on_load"`
+	Override      bool                   `json:"override" yaml:"override"`
 }
 
 type CorePluginConfig struct {
@@ -105,7 +107,7 @@ func LoadConfig(path string) GatewayConfig {
 			log.Fatal("failed to start core plugin:", err)
 		}
 
-		RegisterActiveCore(pcfg.Name, p)
+		registerActiveCore(pcfg.Name, p)
 	}
 
 	return cfg

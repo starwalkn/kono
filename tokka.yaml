@@ -17,20 +17,24 @@ plugins:
       limit: 10
       window: 1
 
+middlewares:
+  - name: recoverer
+    path: /tokka/middlewares/recoverer.so
+    can_fail_on_load: false
+    config:
+      enabled: true
+
+  - name: logger
+    path: /tokka/middlewares/logger.so
+    can_fail_on_load: false
+    config:
+      enabled: true
+
 routes:
   - path: /api/users
     method: GET
     middlewares:
-      - name: recoverer
-        path: /tokka/middlewares/recoverer.so
-        can_fail_on_load: true
-        config:
-          enabled: true
-      - name: logger
-        path: /tokka/middlewares/logger.so
-        can_fail_on_load: false
-        config:
-          enabled: true
+
     backends:
       - url: http://user-service.local/v1/users
         method: GET
@@ -39,6 +43,7 @@ routes:
           - "*"
         forward_headers:
           - "X-*"
+
       - url: http://profile-service.local/v1/details
         method: GET
         forward_headers:
@@ -50,16 +55,11 @@ routes:
   - path: /api/domains
     method: GET
     middlewares:
-      - name: recoverer
-        path: /tokka/middlewares/recoverer.so
-        can_fail_on_load: true
-        config:
-          enabled: true
       - name: logger
         path: /tokka/middlewares/logger.so
-        can_fail_on_load: false
+        override: true
         config:
-          enabled: true
+          enabled: false
     backends:
       - url: http://domain-service.local/v1/domains
         method: GET
@@ -68,6 +68,7 @@ routes:
           - "*"
         forward_headers:
           - "X-For*"
+
       - url: http://profile-service.local/v1/details
         method: GET
         timeout: 2000
@@ -93,6 +94,7 @@ routes:
       - url: http://domain-service.local/v1/domains
         method: POST
         timeout: 1000
+
       - url: http://profile-service.local/v1/details
         method: GET
     aggregate: array
@@ -108,11 +110,19 @@ routes:
         config:
           enabled: true
           alg: deflate
+
+      - name: recoverer
+        path: /tokka/middlewares/recoverer.so
+        can_fail_on_load: true
+        override: true
+        config:
+          enabled: false
     plugins: [ ]
     backends:
       - url: http://domain-service.local/v1/domains
         method: DELETE
         timeout: 2000
+
       - url: http://profile-service.local/v1/details
         method: GET
     aggregate: array

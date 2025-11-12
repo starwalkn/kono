@@ -28,7 +28,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      tokka.NewRouter(cfg.Routes),
+		Handler:      tokka.NewRouter(cfg.Routes, cfg.Middlewares),
 		ReadTimeout:  time.Duration(cfg.Server.Timeout) * time.Second,
 		WriteTimeout: time.Duration(cfg.Server.Timeout) * time.Second,
 	}

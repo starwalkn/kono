@@ -28,27 +28,19 @@ func createCorePlugin(name string) CorePlugin {
 	if f, ok := coreRegistry[name]; ok {
 		return f()
 	}
+
 	return nil
 }
 
-func RegisterActiveCore(name string, plugin CorePlugin) {
+func registerActiveCore(name string, plugin CorePlugin) {
 	muCores.Lock()
 	defer muCores.Unlock()
 	activeCores[name] = plugin
 }
 
-func GetCorePlugin(name string) CorePlugin {
+func getActiveCorePlugin(name string) CorePlugin {
 	muCores.RLock()
 	defer muCores.RUnlock()
-	return activeCores[name]
-}
 
-func ActiveCores() map[string]CorePlugin {
-	muCores.RLock()
-	defer muCores.RUnlock()
-	c := make(map[string]CorePlugin, len(activeCores))
-	for k, v := range activeCores {
-		c[k] = v
-	}
-	return c
+	return activeCores[name]
 }

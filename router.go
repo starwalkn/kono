@@ -20,113 +20,6 @@ type Router struct {
 	log *zap.Logger
 }
 
-func NewRouter(cfgs []RouteConfig) *Router {
-	log := logger.New(true)
-
-	router := &Router{
-		dispatcher: &defaultDispatcher{
-			client: &http.Client{},
-			log:    log.Named("dispatcher"),
-		},
-		aggregator: &defaultAggregator{
-			log: log.Named("aggregator"),
-		},
-		Routes: nil,
-		log:    log,
-	}
-
-	routes := make([]Route, 0, len(cfgs))
-
-	for _, cfg := range cfgs {
-		// --- backends ---
-		backends := make([]Backend, 0, len(cfg.Backends))
-		for _, bcfg := range cfg.Backends {
-			//nolint:staticcheck // backend structure may change
-			backend := Backend{
-				URL:                 bcfg.URL,
-				Method:              bcfg.Method,
-				Timeout:             bcfg.Timeout,
-				Headers:             bcfg.Headers,
-				ForwardHeaders:      bcfg.ForwardHeaders,
-				ForwardQueryStrings: bcfg.ForwardQueryStrings,
-			}
-
-			backends = append(backends, backend)
-		}
-
-		// --- plugins ---
-		plugins := make([]Plugin, 0, len(cfg.Plugins))
-		for _, pcfg := range cfg.Plugins {
-			if slices.ContainsFunc(plugins, func(plugin Plugin) bool {
-				return plugin.Name() == pcfg.Name
-			}) {
-				continue
-			}
-
-			soPlugin := loadPluginFromSO(pcfg.Path, pcfg.Config, log)
-			if soPlugin == nil {
-				log.Error(
-					"cannot load plugin from .so",
-					zap.String("name", pcfg.Name),
-					zap.String("path", pcfg.Path),
-				)
-				continue
-			}
-
-			log.Info(
-				"plugin initialized",
-				zap.String("name", soPlugin.Name()),
-				zap.String("route", cfg.Method+" "+cfg.Path),
-			)
-
-			plugins = append(plugins, soPlugin)
-		}
-
-		// --- middlewares ---
-		middlewares := make([]Middleware, 0, len(cfg.Middlewares))
-		for _, mcfg := range cfg.Middlewares {
-			soMiddleware := loadMiddlewareFromSO(mcfg.Path, mcfg.Config, log)
-			if soMiddleware == nil {
-				log.Error(
-					"cannot load middleware from .so",
-					zap.String("name", mcfg.Name),
-				)
-
-				if !mcfg.CanFailOnLoad {
-					panic("cannot load middleware from .so")
-				}
-				continue
-			}
-
-			log.Info(
-				"middleware initialized",
-				zap.String("name", soMiddleware.Name()),
-				zap.String("route", cfg.Method+" "+cfg.Path),
-			)
-
-			middlewares = append(middlewares, soMiddleware)
-		}
-
-		// --- route ---
-		route := Route{
-			Path:                cfg.Path,
-			Method:              cfg.Method,
-			Backends:            backends,
-			Aggregate:           cfg.Aggregate,
-			Transform:           cfg.Transform,
-			AllowPartialResults: cfg.AllowPartialResults,
-			Plugins:             plugins,
-			Middlewares:         middlewares,
-		}
-
-		routes = append(routes, route)
-	}
-
-	router.Routes = routes
-
-	return router
-}
-
 type Route struct {
 	Path                string
 	Method              string
@@ -147,6 +40,167 @@ type Backend struct {
 	ForwardQueryStrings []string
 }
 
+func NewRouter(cfgs []RouteConfig, globalMiddlewareCfgs []MiddlewareConfig) *Router {
+	log := logger.New(true)
+
+	// --- global middlewares ---
+	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareCfgs, log)
+
+	router := &Router{
+		dispatcher: &defaultDispatcher{
+			client: &http.Client{},
+			log:    log.Named("dispatcher"),
+		},
+		aggregator: &defaultAggregator{
+			log: log.Named("aggregator"),
+		},
+		Routes: nil,
+		log:    log,
+	}
+
+	routes := make([]Route, 0, len(cfgs))
+
+	for _, rcfg := range cfgs {
+		// --- backends ---
+		backends := initBackends(rcfg.Backends)
+
+		// --- plugins ---
+		plugins := initPlugins(rcfg.Plugins, log)
+
+		// --- route middlewares ---
+		routeMiddlewares := make([]Middleware, 0, len(rcfg.Middlewares))
+		for _, mcfg := range rcfg.Middlewares {
+			soMiddleware := loadMiddlewareFromSO(mcfg.Path, mcfg.Config, log)
+			if soMiddleware == nil {
+				log.Error(
+					"cannot load middleware from .so",
+					zap.String("name", mcfg.Name),
+				)
+
+				if !mcfg.CanFailOnLoad {
+					panic("cannot load middleware from .so")
+				}
+
+				continue
+			}
+
+			log.Info(
+				"middleware initialized",
+				zap.String("name", soMiddleware.Name()),
+				zap.String("route", rcfg.Method+" "+rcfg.Path),
+			)
+
+			if mcfg.Override {
+				if idx, ok := globalMiddlewareIndices[soMiddleware.Name()]; ok {
+					globalMiddlewares[idx] = soMiddleware
+					continue
+				}
+			}
+
+			routeMiddlewares = append(routeMiddlewares, soMiddleware)
+		}
+
+		middlewares := append(globalMiddlewares, routeMiddlewares...) //nolint:gocritic // we do not want to modify globalMiddlewares here
+
+		// --- route ---
+		route := Route{
+			Path:                rcfg.Path,
+			Method:              rcfg.Method,
+			Backends:            backends,
+			Aggregate:           rcfg.Aggregate,
+			Transform:           rcfg.Transform,
+			AllowPartialResults: rcfg.AllowPartialResults,
+			Plugins:             plugins,
+			Middlewares:         middlewares,
+		}
+
+		routes = append(routes, route)
+	}
+
+	router.Routes = routes
+
+	return router
+}
+
+func initGlobalMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) (map[string]int, []Middleware) {
+	globalMiddlewareIndices := make(map[string]int)
+	globalMiddlewares := make([]Middleware, 0, len(cfgs))
+
+	for i, cfg := range cfgs {
+		soMiddleware := loadMiddlewareFromSO(cfg.Path, cfg.Config, log)
+		if soMiddleware == nil {
+			log.Error(
+				"cannot load middleware from .so",
+				zap.String("name", cfg.Name),
+			)
+
+			if !cfg.CanFailOnLoad {
+				panic("cannot load middleware from .so")
+			}
+
+			continue
+		}
+
+		globalMiddlewares = append(globalMiddlewares, soMiddleware)
+		globalMiddlewareIndices[soMiddleware.Name()] = i
+	}
+
+	return globalMiddlewareIndices, globalMiddlewares
+}
+
+func initBackends(cfgs []BackendConfig) []Backend {
+	backends := make([]Backend, 0, len(cfgs))
+
+	for _, cfg := range cfgs {
+		//nolint:staticcheck // backend structure may change
+		backend := Backend{
+			URL:                 cfg.URL,
+			Method:              cfg.Method,
+			Timeout:             cfg.Timeout,
+			Headers:             cfg.Headers,
+			ForwardHeaders:      cfg.ForwardHeaders,
+			ForwardQueryStrings: cfg.ForwardQueryStrings,
+		}
+
+		backends = append(backends, backend)
+	}
+
+	return backends
+}
+
+func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
+	plugins := make([]Plugin, 0, len(cfgs))
+
+	for _, cfg := range cfgs {
+		cfn := func(plugin Plugin) bool {
+			return plugin.Name() == cfg.Name
+		}
+
+		if slices.ContainsFunc(plugins, cfn) {
+			continue
+		}
+
+		soPlugin := loadPluginFromSO(cfg.Path, cfg.Config, log)
+		if soPlugin == nil {
+			log.Error(
+				"cannot load plugin from .so",
+				zap.String("name", cfg.Name),
+				zap.String("path", cfg.Path),
+			)
+			continue
+		}
+
+		log.Info(
+			"plugin initialized",
+			zap.String("name", soPlugin.Name()),
+		)
+
+		plugins = append(plugins, soPlugin)
+	}
+
+	return plugins
+}
+
 /*
 ServeHTTP is the incoming requests pipeline:
 
@@ -161,7 +215,7 @@ ServeHTTP is the incoming requests pipeline:
 */
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// --- 0. Global (core) plugins, e.g. rate limiter ---
-	if rl := GetCorePlugin("ratelimit"); rl != nil { //nolint:nolintlint,nestif
+	if rl := getActiveCorePlugin("ratelimit"); rl != nil { //nolint:nolintlint,nestif
 		if limiter, ok := rl.(contract.RateLimit); ok {
 			ip := req.Header.Get("X-Forwarded-For")
 			if ip == "" {
@@ -178,7 +232,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	rt := r.match(req)
 	if rt == nil {
 		r.log.Error("no route found", zap.String("request_uri", req.URL.RequestURI()))
-		http.Error(w, "404 page not found", http.StatusNotFound)
+		http.NotFound(w, req)
 
 		return
 	}
@@ -244,11 +298,9 @@ func (r *Router) match(req *http.Request) *Route {
 			continue
 		}
 
-		if route.Path != "" && req.URL.Path != route.Path {
-			continue
+		if route.Path != "" && req.URL.Path == route.Path {
+			return &route
 		}
-
-		return &route
 	}
 
 	return nil
@@ -260,10 +312,10 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 			w.Header().Add(k, v)
 		}
 	}
+
 	w.WriteHeader(resp.StatusCode)
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
-
 		_ = resp.Body.Close()
 	}
 }

@@ -20,28 +20,29 @@
       }
     }
   ],
+  "middlewares": [
+    {
+      "name": "recoverer",
+      "path": "/tokka/middlewares/recoverer.so",
+      "can_fail_on_load": false,
+      "config": {
+        "enabled": true
+      }
+    },
+    {
+      "name": "logger",
+      "path": "/tokka/middlewares/logger.so",
+      "can_fail_on_load": false,
+      "config": {
+        "enabled": true
+      }
+    }
+  ],
   "routes": [
     {
       "path": "/api/users",
       "method": "GET",
-      "middlewares": [
-        {
-          "name": "recoverer",
-          "path": "/tokka/middlewares/recoverer.so",
-          "can_fail_on_load": true,
-          "config": {
-            "enabled": true
-          }
-        },
-        {
-          "name": "logger",
-          "path": "/tokka/middlewares/logger.so",
-          "can_fail_on_load": false,
-          "config": {
-            "enabled": true
-          }
-        }
-      ],
+      "middlewares": [],
       "backends": [
         {
           "url": "http://user-service.local/v1/users",
@@ -71,19 +72,11 @@
       "method": "GET",
       "middlewares": [
         {
-          "name": "recoverer",
-          "path": "/tokka/middlewares/recoverer.so",
-          "can_fail_on_load": true,
-          "config": {
-            "enabled": true
-          }
-        },
-        {
           "name": "logger",
           "path": "/tokka/middlewares/logger.so",
-          "can_fail_on_load": false,
+          "override": true,
           "config": {
-            "enabled": true
+            "enabled": false
           }
         }
       ],
@@ -156,6 +149,15 @@
           "config": {
             "enabled": true,
             "alg": "deflate"
+          }
+        },
+        {
+          "name": "recoverer",
+          "path": "/tokka/middlewares/recoverer.so",
+          "can_fail_on_load": true,
+          "override": true,
+          "config": {
+            "enabled": false
           }
         }
       ],
