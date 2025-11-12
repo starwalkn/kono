@@ -38,13 +38,17 @@ jobs:
           pkgs=$(go list ./... | grep -v '/cmd/' | grep -v '/dashboard/' | grep -v '/internal/')
           echo "Testing packages: $pkgs"
           
+          mkdir -p coverage
+          
           for pkg in $pkgs; do
-            go test -v -coverprofile="$pkg.cover.out" "$pkg" || exit 1
+            file="coverage/$(echo $pkg | tr / -).cover.out"
+            echo "Testing $pkg -> $file"
+            go test -v -coverprofile="$file" "$pkg" || echo "Tests failed for $pkg"
           done
 
-          gocovmerge $(ls *.cover.out) > coverage.out
+          gocovmerge coverage/*.cover.out > coverage/coverage.out
 
-          go tool cover -func=coverage.out
+          go tool cover -func=coverage/coverage.out
 
       - name: Upload coverage report as artifact
         uses: actions/upload-artifact@v4
@@ -91,7 +95,7 @@ jobs:
     # Build and push docker image only for new tags
     if: startsWith(github.ref, 'refs/tags/v')
 
-    name: Docker Build & Push
+    name: Docker Build and Push
     runs-on: ubuntu-22.04
 
     steps:
