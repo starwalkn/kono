@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -21,13 +22,7 @@ func main() {
 	}
 
 	cfg := tokka.LoadConfig(cfgPath)
-
 	log := logger.New(cfg.Debug)
-	defer func() {
-		if err := log.Sync(); err != nil {
-			log.Warn("cannot sync log", zap.Error(err))
-		}
-	}()
 
 	if cfg.Dashboard.Enable {
 		dashboardServer := dashboard.NewServer(&cfg, log.Named("dashboard"))
@@ -41,7 +36,13 @@ func main() {
 		WriteTimeout: time.Duration(cfg.Server.Timeout) * time.Second,
 	}
 
-	if err := server.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("server error", zap.Error(err))
 	}
+
+	if err := log.Sync(); err != nil {
+		log.Warn("cannot sync log", zap.Error(err))
+	}
+
+	log.Info("server is closed")
 }

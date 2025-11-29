@@ -32,11 +32,6 @@ func New(debug bool) *zap.Logger {
 	if err != nil {
 		panic(err)
 	}
-	defer func() {
-		if err = log.Sync(); err != nil {
-			log.Warn("failed to sync logger", zap.Error(err))
-		}
-	}()
 
 	return log
 }
