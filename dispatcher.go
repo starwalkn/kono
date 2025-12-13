@@ -23,26 +23,24 @@ type defaultDispatcher struct {
 }
 
 func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]byte {
-	var wg sync.WaitGroup
-
 	results := make([][]byte, len(route.Backends))
 
-	originalBody, err := io.ReadAll(original.Body)
-	if err != nil {
-		d.log.Error("cannot read body", zap.Error(err))
+	originalBody, readErr := io.ReadAll(original.Body)
+	if readErr != nil {
+		d.log.Error("cannot read body", zap.Error(readErr))
 		return nil
 	}
-	if err = original.Body.Close(); err != nil {
-		d.log.Warn("cannot close original request body", zap.Error(err))
+	if readErr = original.Body.Close(); readErr != nil {
+		d.log.Warn("cannot close original request body", zap.Error(readErr))
 	}
+
+	var wg sync.WaitGroup
 
 	for i, b := range route.Backends {
 		wg.Add(1)
 
 		go func(i int, b Backend, originalBody []byte) {
 			defer wg.Done()
-
-			// start := time.Now()
 
 			method := b.Method
 			if method == "" {
@@ -58,8 +56,8 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]b
 				originalBody = nil
 			}
 
-			req, reqErr := http.NewRequestWithContext(ctx, method, b.URL, bytes.NewReader(originalBody))
-			if reqErr != nil {
+			req, err := http.NewRequestWithContext(ctx, method, b.URL, bytes.NewReader(originalBody))
+			if err != nil {
 				results[i] = []byte(jsonErrInternal)
 				return
 			}
@@ -69,24 +67,24 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]b
 
 			d.log.Info("dispatching request", zap.String("method", method), zap.String("url", req.URL.String()))
 
-			resp, reqErr := d.client.Do(req)
-			if reqErr != nil {
+			resp, err := d.client.Do(req)
+			if err != nil {
 				results[i] = []byte(jsonErrInternal)
 
-				d.log.Error("backend request failed", zap.String("method", method), zap.Error(reqErr))
+				d.log.Error("backend request failed", zap.String("method", method), zap.Error(err))
 				return
 			}
 
-			body, reqErr := io.ReadAll(resp.Body)
-			if reqErr != nil {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
 				results[i] = []byte(jsonErrInternal)
 
-				d.log.Error("cannot read backend response body", zap.Error(reqErr))
+				d.log.Error("cannot read backend response body", zap.Error(err))
 				return
 			}
 
-			if reqErr = resp.Body.Close(); reqErr != nil {
-				d.log.Warn("cannot close backend response body", zap.Error(reqErr))
+			if err = resp.Body.Close(); err != nil {
+				d.log.Warn("cannot close backend response body", zap.Error(err))
 			}
 
 			results[i] = body

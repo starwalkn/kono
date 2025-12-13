@@ -39,11 +39,8 @@ type Backend struct {
 	ForwardQueryStrings []string
 }
 
-func NewRouter(cfgs []RouteConfig, globalMiddlewareCfgs []MiddlewareConfig, log *zap.Logger) *Router {
-	// --- global middlewares ---
-	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareCfgs, log)
-
-	router := &Router{
+func newDefaultRouter(routesCount int, log *zap.Logger) *Router {
+	return &Router{
 		dispatcher: &defaultDispatcher{
 			client: &http.Client{},
 			log:    log.Named("dispatcher"),
@@ -51,19 +48,17 @@ func NewRouter(cfgs []RouteConfig, globalMiddlewareCfgs []MiddlewareConfig, log 
 		aggregator: &defaultAggregator{
 			log: log.Named("aggregator"),
 		},
-		Routes: nil,
+		Routes: make([]Route, 0, routesCount),
 		log:    log,
 	}
+}
+func NewRouter(cfgs []RouteConfig, globalMiddlewareCfgs []MiddlewareConfig, log *zap.Logger) *Router {
+	// --- global middlewares ---
+	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareCfgs, log)
 
-	routes := make([]Route, 0, len(cfgs))
+	router := newDefaultRouter(len(cfgs), log)
 
 	for _, rcfg := range cfgs {
-		// --- backends ---
-		backends := initBackends(rcfg.Backends)
-
-		// --- plugins ---
-		plugins := initPlugins(rcfg.Plugins, log)
-
 		// --- route middlewares ---
 		routeMiddlewares := make([]Middleware, 0, len(rcfg.Middlewares))
 		for _, mcfg := range rcfg.Middlewares {
@@ -99,22 +94,19 @@ func NewRouter(cfgs []RouteConfig, globalMiddlewareCfgs []MiddlewareConfig, log 
 
 		middlewares := append(globalMiddlewares, routeMiddlewares...) //nolint:gocritic // we do not want to modify globalMiddlewares here
 
-		// --- route ---
 		route := Route{
 			Path:                rcfg.Path,
 			Method:              rcfg.Method,
-			Backends:            backends,
+			Backends:            initBackends(rcfg.Backends),
 			Aggregate:           rcfg.Aggregate,
 			Transform:           rcfg.Transform,
 			AllowPartialResults: rcfg.AllowPartialResults,
-			Plugins:             plugins,
+			Plugins:             initPlugins(rcfg.Plugins, log),
 			Middlewares:         middlewares,
 		}
 
-		routes = append(routes, route)
+		router.Routes = append(router.Routes, route)
 	}
-
-	router.Routes = routes
 
 	return router
 }
@@ -234,7 +226,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		tctx := newContext(req, rt)
+		tctx := newContext(req, rt) // Tokka context.
 
 		// --- 1. Request-phase plugins ---
 		for _, p := range rt.Plugins {

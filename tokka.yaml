@@ -34,8 +34,6 @@ middlewares:
 routes:
   - path: /api/users
     method: GET
-    middlewares:
-
     backends:
       - url: http://user-service.local/v1/users
         method: GET

@@ -48,6 +48,7 @@ func (a *defaultAggregator) doMerge(responses [][]byte, allowPartialResults bool
 
 	for _, resp := range responses {
 		var obj map[string]interface{}
+
 		if err := json.Unmarshal(resp, &obj); err != nil {
 			if allowPartialResults {
 				a.log.Warn(
@@ -78,7 +79,7 @@ func (a *defaultAggregator) doArray(responses [][]byte) ([]byte, error) {
 	var arr []json.RawMessage
 
 	for _, resp := range responses {
-		arr = append(arr, json.RawMessage(resp))
+		arr = append(arr, resp)
 	}
 
 	res, err := json.Marshal(arr)

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -24,6 +25,19 @@ func NewServer(cfg *tokka.GatewayConfig, log *zap.Logger) *Server {
 
 func (s *Server) Start() {
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		cfgBytes, err := json.Marshal(s.cfg)
+		if err != nil {
+			s.log.Error("cannot marshal config", zap.Error(err))
+			http.Error(w, "cannot marshal config", http.StatusInternalServerError)
+		}
+
+		w.Write(cfgBytes)
+	})
 
 	addr := fmt.Sprintf(":%d", s.cfg.Dashboard.Port)
 

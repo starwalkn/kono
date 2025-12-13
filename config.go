@@ -108,7 +108,7 @@ func LoadConfig(path string) GatewayConfig {
 			log.Fatal("failed to start core plugin:", err)
 		}
 
-		registerActiveCore(pcfg.Name, p)
+		registerActiveCorePlugin(pcfg.Name, p)
 	}
 
 	return cfg
