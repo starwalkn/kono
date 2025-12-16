@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/starwalkn/tokka/internal/metric"
 	"go.uber.org/zap"
 )
 
@@ -25,8 +26,9 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 	defer backendB.Close()
 
 	d := &defaultDispatcher{
-		client: &http.Client{},
-		log:    zap.NewNop(),
+		client:  &http.Client{},
+		log:     zap.NewNop(),
+		metrics: metric.New(),
 	}
 
 	route := &Route{
@@ -58,8 +60,9 @@ func TestDispatcher_Dispatch_Timeout(t *testing.T) {
 	defer backend.Close()
 
 	d := &defaultDispatcher{
-		client: &http.Client{},
-		log:    zap.NewNop(),
+		client:  &http.Client{},
+		log:     zap.NewNop(),
+		metrics: metric.New(),
 	}
 
 	route := &Route{
@@ -85,8 +88,9 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 	defer backend.Close()
 
 	d := &defaultDispatcher{
-		client: &http.Client{},
-		log:    zap.NewNop(),
+		client:  &http.Client{},
+		log:     zap.NewNop(),
+		metrics: metric.New(),
 	}
 
 	route := &Route{
@@ -118,8 +122,9 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 	defer backend.Close()
 
 	d := &defaultDispatcher{
-		client: &http.Client{},
-		log:    zap.NewNop(),
+		client:  &http.Client{},
+		log:     zap.NewNop(),
+		metrics: metric.New(),
 	}
 
 	route := &Route{
