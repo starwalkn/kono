@@ -1,0 +1,23 @@
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Linter configuration file
+.golangci.yml
+
+# Example config files
+tokka.json
+tokka.yaml
+
+# Built middlewares and plugins
+build/middlewares
+build/plugins
+
+# Local k8s configuration files
+build/k8s
+
+# JetBrains IDEs
+.idea
