@@ -22,8 +22,7 @@ go.work.sum
 .bin
 
 # Local configuration files
-local.tokka.yaml
-compose.yaml
+.local
 
 # Built middlewares and plugins
 build/middlewares

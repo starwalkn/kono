@@ -1,0 +1,68 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* You can override the default Infima variables here. */
+
+[data-theme="light"] {
+    --ifm-color-primary: #1e3a8a;
+    --ifm-color-primary-dark: #1e40af;
+    --ifm-color-primary-darker: #1e3a8a;
+    --ifm-color-primary-darkest: #1e3a8a;
+    --ifm-color-primary-light: #3b82f6;
+    --ifm-color-primary-lighter: #60a5fa;
+    --ifm-color-primary-lightest: #60a5fa;
+    --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* For readability concerns, you should choose a lighter palette in dark mode. */
+[data-theme="dark"] {
+    --ifm-color-primary: #1e3a8a;
+    --ifm-color-primary-dark: #1e40af;
+    --ifm-color-primary-darker: #1e3a8a;
+    --ifm-color-primary-darkest: #1e3a8a;
+    --ifm-color-primary-light: #3b82f6;
+    --ifm-color-primary-lighter: #60a5fa;
+    --ifm-color-primary-lightest: #60a5fa;
+    --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* Navbar link hover */
+.navbar__item:hover {
+    color: var(--ifm-color-primary-light);
+}
+
+/* Footer background */
+.footer {
+    background-color: #1e3a8a;
+}
+
+/* Sidebar background */
+.docs-sidebar {
+    background-color: #f3f6fb;
+}
+
+/* Code block headers */
+.theme-code-block {
+    border-top: 3px solid #3b82f6;
+}
+
+code {
+    font-family:
+        "Monaspace Neon", "JetBrains Mono", "Monaspace Neon", Menlo, Monaco,
+        monospace;
+    font-size: 0.9rem;
+    font-variant-ligatures: contextual;
+}
+
+pre {
+    font-family:
+        "Monaspace Neon", "JetBrains Mono", "Monaspace Neon", Menlo, Monaco,
+        monospace;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    tab-size: 4;
+    font-variant-ligatures: contextual;
+}
