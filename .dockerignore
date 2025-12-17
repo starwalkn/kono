@@ -11,6 +11,8 @@ go.work.sum
 # Example config files
 tokka.json
 tokka.yaml
+local.tokka.yaml
+compose.yaml
 
 # Built middlewares and plugins
 build/middlewares

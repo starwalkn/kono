@@ -21,6 +21,10 @@ go.work.sum
 # Binaries directory
 .bin
 
+# Local configuration files
+local.tokka.yaml
+compose.yaml
+
 # Built middlewares and plugins
 build/middlewares
 build/plugins

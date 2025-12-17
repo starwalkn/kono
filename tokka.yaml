@@ -5,12 +5,12 @@ debug: false
 
 server:
   port: 7805
-  timeout: 7806
+  timeout: 5000
   enable_metrics: true
 
 dashboard:
   enable: true
-  port: 8095
+  port: 7806
   timeout: 5000
 
 plugins:

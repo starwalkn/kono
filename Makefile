@@ -1,9 +1,9 @@
 GOOS ?= linux
-GOARCH ?= arm64
+GOARCH ?= amd64
 PLUGIN_OUT=build/plugins
 MIDDLEWARE_OUT=build/middlewares
 
-.PHONY: all build plugins clean lint
+.PHONY: all build plugins clean lint test compose
 
 all: build plugins
 

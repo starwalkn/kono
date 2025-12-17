@@ -26,7 +26,7 @@ func (p *Plugin) Type() tokka.PluginType {
 	return tokka.PluginTypeResponse
 }
 
-func (p *Plugin) Init(_ map[string]interface{}) {}
+func (p *Plugin) Init(_ map[string]any) {}
 
 func (p *Plugin) Execute(ctx tokka.Context) {
 	if ctx.Response() == nil || ctx.Response().Body == nil {

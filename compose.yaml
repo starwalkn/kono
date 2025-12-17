@@ -5,10 +5,10 @@ services:
       context: .
       dockerfile: build/Dockerfile
       platforms:
-        - linux/amd64
+        - linux/arm64
     ports:
-      - '8090:8090'
-      - '8095:8095'
+      - "7805:7805"
+      - "7806:7806"
     volumes:
       - ./tokka.yaml:/app/tokka.yaml
     environment:

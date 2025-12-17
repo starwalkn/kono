@@ -26,7 +26,7 @@ func (m *Middleware) Name() string {
 	return "recoverer"
 }
 
-func (m *Middleware) Init(cfg map[string]interface{}) error {
+func (m *Middleware) Init(cfg map[string]any) error {
 	if val, ok := cfg["enabled"].(bool); ok {
 		m.enabled = val
 	}
