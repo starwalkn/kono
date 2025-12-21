@@ -1,158 +1,94 @@
 package tokka
 
 import (
-	"bytes"
-	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
-	"strings"
 	"sync"
-	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/starwalkn/tokka/internal/metric"
 )
 
+const maxBodySize = 5 << 20 // 5MB
+
 type dispatcher interface {
-	dispatch(route *Route, original *http.Request) [][]byte
+	dispatch(route *Route, original *http.Request) []UpstreamResponse
 }
 
 type defaultDispatcher struct {
-	client *http.Client
-	log    *zap.Logger
+	log     *zap.Logger
+	metrics metric.Metrics
 }
 
-func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) [][]byte {
-	var wg sync.WaitGroup
+// dispatch dispatches the incoming request to the upstreams and returns their responses.
+func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []UpstreamResponse {
+	results := make([]UpstreamResponse, len(route.Upstreams))
 
-	results := make([][]byte, len(route.Backends))
-
-	originalBody, err := io.ReadAll(original.Body)
-	if err != nil {
-		d.log.Error("cannot read body", zap.Error(err))
+	originalBody, readErr := io.ReadAll(io.LimitReader(original.Body, maxBodySize+1))
+	if readErr != nil {
+		d.log.Error("cannot read body", zap.Error(readErr))
 		return nil
 	}
-	if err = original.Body.Close(); err != nil {
-		d.log.Warn("cannot close original request body", zap.Error(err))
+	if readErr = original.Body.Close(); readErr != nil {
+		d.log.Warn("cannot close original request body", zap.Error(readErr))
 	}
 
-	for i, b := range route.Backends {
+	if len(originalBody) > maxBodySize {
+		d.metrics.IncFailedRequestsTotal(metric.FailReasonBodyTooLarge)
+		return nil
+	}
+
+	var wg sync.WaitGroup
+
+	for i, u := range route.Upstreams {
 		wg.Add(1)
 
-		go func(i int, b Backend, originalBody []byte) {
+		go func(i int, u Upstream, originalBody []byte) {
 			defer wg.Done()
 
-			// start := time.Now()
+			upstreamPolicy := u.Policy()
 
-			method := b.Method
-			if method == "" {
-				// Fallback method.
-				method = original.Method
+			resp := u.callWithRetry(original.Context(), original, originalBody, upstreamPolicy.RetryPolicy)
+			if resp.Err != nil {
+				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
+				d.log.Error("cannot call upstream",
+					zap.String("name", u.Name()),
+					zap.Error(resp.Err),
+				)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(b.Timeout))
-			defer cancel()
-
-			// Send request body only for body-acceptable methods requests.
-			if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
-				originalBody = nil
+			if resp.Status != 0 {
+				d.metrics.IncResponsesTotal(resp.Status)
 			}
 
-			req, reqErr := http.NewRequestWithContext(ctx, method, b.URL, bytes.NewReader(originalBody))
-			if reqErr != nil {
-				results[i] = []byte(jsonErrInternal)
-				return
+			var errs []error
+
+			if upstreamPolicy.RequireBody && len(resp.Body) == 0 {
+				errs = append(errs, errors.New("empty body not allowed by upstream policy"))
 			}
 
-			d.resolveQueryStrings(b, req, original)
-			d.resolveHeaders(b, req, original)
-
-			d.log.Info("dispatching request", zap.String("method", method), zap.String("url", req.URL.String()))
-
-			resp, reqErr := d.client.Do(req)
-			if reqErr != nil {
-				results[i] = []byte(jsonErrInternal)
-
-				d.log.Error("backend request failed", zap.String("method", method), zap.Error(reqErr))
-				return
+			if mapped, ok := upstreamPolicy.MapStatusCodes[resp.Status]; ok {
+				resp.Status = mapped
 			}
 
-			body, reqErr := io.ReadAll(resp.Body)
-			if reqErr != nil {
-				results[i] = []byte(jsonErrInternal)
-
-				d.log.Error("cannot read backend response body", zap.Error(reqErr))
-				return
+			if len(upstreamPolicy.AllowedStatuses) > 0 && !slices.Contains(upstreamPolicy.AllowedStatuses, resp.Status) {
+				errs = append(errs, fmt.Errorf("status %d not allowed by upstream policy", resp.Status))
 			}
 
-			if reqErr = resp.Body.Close(); reqErr != nil {
-				d.log.Warn("cannot close backend response body", zap.Error(reqErr))
+			if len(errs) > 0 {
+				d.metrics.IncFailedRequestsTotal(metric.FailReasonPolicyViolation)
+				resp.Err = errors.Join(errs...)
 			}
 
-			results[i] = body
-		}(i, b, originalBody)
+			results[i] = *resp
+		}(i, u, originalBody)
 	}
 
 	wg.Wait()
 
 	return results
-}
-
-func (d *defaultDispatcher) resolveQueryStrings(b Backend, target, original *http.Request) {
-	q := target.URL.Query()
-
-	for _, fqs := range b.ForwardQueryStrings {
-		if fqs == "*" {
-			q = original.URL.Query()
-			break
-		}
-
-		if original.URL.Query().Get(fqs) == "" {
-			continue
-		}
-
-		q.Add(fqs, original.URL.Query().Get(fqs))
-	}
-
-	target.URL.RawQuery = q.Encode()
-}
-
-func (d *defaultDispatcher) resolveHeaders(b Backend, target, original *http.Request) {
-	// Set forwarding headers.
-	for _, fw := range b.ForwardHeaders {
-		if fw == "*" {
-			target.Header = original.Header.Clone()
-			break
-		}
-
-		if strings.HasSuffix(fw, "*") {
-			prefix := strings.TrimSuffix(fw, "*")
-
-			for name, values := range original.Header {
-				if strings.HasPrefix(name, prefix) {
-					for _, v := range values {
-						target.Header.Add(name, v)
-					}
-				}
-			}
-
-			continue
-		}
-
-		if original.Header.Get(fw) != "" {
-			target.Header.Add(fw, original.Header.Get(fw))
-		}
-	}
-
-	// Rewrite headers which exists in backend headers configuration (rewriting only forwarded headers).
-	for header, value := range b.Headers {
-		if !slices.Contains(b.ForwardHeaders, header) {
-			continue
-		}
-
-		target.Header.Set(header, value)
-	}
-
-	// Always forward the Content-Type header.
-	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
 }

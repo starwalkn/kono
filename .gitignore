@@ -1,9 +1,5 @@
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
+# Plugins
 *.so
-*.dylib
 
 # Test binary, built with `go test -c`
 *.test
@@ -25,7 +21,4 @@ go.work.sum
 build/middlewares
 build/plugins
 
-# Local k8s configuration files
-build/k8s
-
-.idea
+!build/Dockerfile

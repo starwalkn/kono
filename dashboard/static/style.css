@@ -153,8 +153,8 @@ h2 { margin:0; color:var(--accent-strong); font-size:1.15rem; }
     min-width: 75px; text-align: center;
 }
 .path {
-    font-weight:400; /* Более легкий */
-    color:#334155; /* Приглушенный серый */
+    font-weight:400;
+    color:#334155;
     word-break:break-all; font-size:1rem;
     font-family: 'JetBrains Mono', monospace; letter-spacing:-0.01em;
 }
@@ -204,7 +204,7 @@ h2 { margin:0; color:var(--accent-strong); font-size:1.15rem; }
 .backend-url { color: #334155; }
 .backend-timeout { text-align: right; color: var(--muted); }
 
-/* === Route Plugins List (Новый компактный стиль) === */
+/* === Route Plugins List === */
 .route-plugins-list {
     margin: 6px 0 12px 0;
     display: flex;

@@ -38,7 +38,7 @@ func NewPlugin() tokka.CorePlugin {
 
 func (p *Plugin) Name() string { return "ratelimit" }
 
-func (p *Plugin) Init(cfg map[string]interface{}) error {
+func (p *Plugin) Init(cfg map[string]any) error {
 	p.limit = intFrom(cfg, "limit", defaultLimit)
 	p.window = time.Duration(intFrom(cfg, "window", int(defaultWindow.Seconds()))) * time.Second
 	p.buckets = make(map[string]*entry)

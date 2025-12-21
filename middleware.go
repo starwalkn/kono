@@ -8,11 +8,11 @@ import (
 
 type Middleware interface {
 	Name() string
-	Init(cfg map[string]interface{}) error
+	Init(cfg map[string]any) error
 	Handler(next http.Handler) http.Handler
 }
 
-func loadMiddlewareFromSO(path string, cfg map[string]interface{}, log *zap.Logger) Middleware {
+func loadMiddlewareFromSO(path string, cfg map[string]any, log *zap.Logger) Middleware {
 	factory := loadSymbol[func() Middleware](path, "NewMiddleware", log)
 
 	mw := factory()

@@ -1,0 +1,155 @@
+schema = "v1"
+name = "Tokka Gateway"
+version = "0.0.1"
+debug = false
+
+[server]
+port = 7805
+timeout = 5000
+enable_metrics = true
+
+[dashboard]
+enable = true
+port = 7806
+timeout = 5000
+
+[[plugins]]
+name = "ratelimit"
+
+[plugins.config]
+limit = 10
+window = 1
+
+[[middlewares]]
+name = "recoverer"
+path = "/tokka/middlewares/recoverer.so"
+can_fail_on_load = false
+
+[middlewares.config]
+enabled = true
+
+[[middlewares]]
+name = "logger"
+path = "/tokka/middlewares/logger.so"
+can_fail_on_load = false
+
+[middlewares.config]
+enabled = true
+
+[[routes]]
+path = "/api/users"
+method = "GET"
+aggregate = "merge"
+allow_partial_results = true
+
+[[routes.upstreams]]
+url = "http://user-service.local/v1/users"
+method = "GET"
+timeout = 3000
+forward_query_strings = ["*"]
+forward_headers = ["X-*"]
+
+[routes.upstreams.policy]
+allowed_statuses = [200, 404]
+require_body = true
+max_response_body_size = 4096
+
+[routes.upstreams.policy.map_status_codes]
+403 = 404
+
+[routes.upstreams.policy.retry]
+max_retries = 3
+retry_on_statuses = [500, 502, 503]
+backoff_delay = "1s"
+
+[[routes.upstreams]]
+url = "http://profile-service.local/v1/details"
+method = "GET"
+forward_headers = ["X-Request-ID"]
+
+[[routes]]
+path = "/api/domains"
+method = "GET"
+aggregate = "merge"
+allow_partial_results = false
+
+[[routes.middlewares]]
+name = "logger"
+path = "/tokka/middlewares/logger.so"
+override = true
+
+[routes.middlewares.config]
+enabled = false
+
+[[routes.upstreams]]
+url = "http://domain-service.local/v1/domains"
+method = "GET"
+timeout = 3000
+forward_query_strings = ["*"]
+forward_headers = ["X-For*"]
+
+[[routes.upstreams]]
+url = "http://profile-service.local/v1/details"
+method = "GET"
+timeout = 2000
+forward_query_strings = ["id"]
+forward_headers = ["X-For"]
+
+[[routes]]
+path = "/api/domains"
+method = "POST"
+aggregate = "array"
+allow_partial_results = false
+plugins = []
+
+[[routes.middlewares]]
+name = "compressor"
+path = "/tokka/middlewares/compressor.so"
+can_fail_on_load = false
+
+[routes.middlewares.config]
+enabled = true
+alg = "gzip"
+
+[[routes.upstreams]]
+url = "http://domain-service.local/v1/domains"
+method = "POST"
+timeout = 1000
+
+[[routes.upstreams]]
+url = "http://profile-service.local/v1/details"
+method = "GET"
+
+[[routes]]
+path = "/api/domains"
+method = "DELETE"
+aggregate = "array"
+allow_partial_results = false
+plugins = []
+
+[[routes.middlewares]]
+name = "compressor"
+path = "/tokka/middlewares/compressor.so"
+can_fail_on_load = false
+
+[routes.middlewares.config]
+enabled = true
+alg = "deflate"
+
+[[routes.middlewares]]
+name = "recoverer"
+path = "/tokka/middlewares/recoverer.so"
+can_fail_on_load = true
+override = true
+
+[routes.middlewares.config]
+enabled = false
+
+[[routes.upstreams]]
+url = "http://domain-service.local/v1/domains"
+method = "DELETE"
+timeout = 2000
+
+[[routes.upstreams]]
+url = "http://profile-service.local/v1/details"
+method = "GET"

@@ -1,17 +1,21 @@
 {
   "schema": "v1",
   "name": "Tokka Gateway",
-  "version": "0.0.1-beta",
+  "version": "0.0.1",
   "debug": false,
+
   "server": {
-    "port": 8090,
-    "timeout": 5000
+    "port": 7805,
+    "timeout": 5000,
+    "enable_metrics": true
   },
+
   "dashboard": {
     "enable": true,
-    "port": 8095,
+    "port": 7806,
     "timeout": 5000
   },
+
   "plugins": [
     {
       "name": "ratelimit",
@@ -21,6 +25,7 @@
       }
     }
   ],
+
   "middlewares": [
     {
       "name": "recoverer",
@@ -39,35 +44,42 @@
       }
     }
   ],
+
   "routes": [
     {
       "path": "/api/users",
       "method": "GET",
-      "middlewares": [],
-      "backends": [
+      "upstreams": [
         {
           "url": "http://user-service.local/v1/users",
           "method": "GET",
           "timeout": 3000,
-          "forward_query_strings": [
-            "*"
-          ],
-          "forward_headers": [
-            "X-*"
-          ]
+          "forward_query_strings": ["*"],
+          "forward_headers": ["X-*"],
+          "policy": {
+            "allowed_statuses": [200, 404],
+            "require_body": true,
+            "map_status_codes": {
+              "403": 404
+            },
+            "max_response_body_size": 4096,
+            "retry": {
+              "max_retries": 3,
+              "retry_on_statuses": [500, 502, 503],
+              "backoff_delay": "1s"
+            }
+          }
         },
         {
           "url": "http://profile-service.local/v1/details",
           "method": "GET",
-          "forward_headers": [
-            "X-Request-ID"
-          ]
+          "forward_headers": ["X-Request-ID"]
         }
       ],
       "aggregate": "merge",
-      "transform": "default",
       "allow_partial_results": true
     },
+
     {
       "path": "/api/domains",
       "method": "GET",
@@ -81,34 +93,26 @@
           }
         }
       ],
-      "backends": [
+      "upstreams": [
         {
           "url": "http://domain-service.local/v1/domains",
           "method": "GET",
           "timeout": 3000,
-          "forward_query_strings": [
-            "*"
-          ],
-          "forward_headers": [
-            "X-For*"
-          ]
+          "forward_query_strings": ["*"],
+          "forward_headers": ["X-For*"]
         },
         {
           "url": "http://profile-service.local/v1/details",
           "method": "GET",
           "timeout": 2000,
-          "forward_query_strings": [
-            "id"
-          ],
-          "forward_headers": [
-            "X-For"
-          ]
+          "forward_query_strings": ["id"],
+          "forward_headers": ["X-For"]
         }
       ],
       "aggregate": "merge",
-      "transform": "default",
       "allow_partial_results": false
     },
+
     {
       "path": "/api/domains",
       "method": "POST",
@@ -124,7 +128,7 @@
         }
       ],
       "plugins": [],
-      "backends": [
+      "upstreams": [
         {
           "url": "http://domain-service.local/v1/domains",
           "method": "POST",
@@ -136,9 +140,9 @@
         }
       ],
       "aggregate": "array",
-      "transform": "default",
       "allow_partial_results": false
     },
+
     {
       "path": "/api/domains",
       "method": "DELETE",
@@ -163,7 +167,7 @@
         }
       ],
       "plugins": [],
-      "backends": [
+      "upstreams": [
         {
           "url": "http://domain-service.local/v1/domains",
           "method": "DELETE",
@@ -175,7 +179,6 @@
         }
       ],
       "aggregate": "array",
-      "transform": "default",
       "allow_partial_results": false
     }
   ]

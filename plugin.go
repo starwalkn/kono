@@ -14,8 +14,8 @@ type Plugin interface {
 type PluginType int
 
 const (
-	PluginTypeRequest  = iota // JWT, rate limit, logging
-	PluginTypeResponse        // Transform, mask, log
+	PluginTypeRequest = iota
+	PluginTypeResponse
 )
 
 type BasePlugin struct {

@@ -1,4 +1,21 @@
-# Stage 1: Build Go tokka binary
+# Stage 1: Build dashboard
+FROM node:18 AS dashboard-builder
+
+WORKDIR /app
+
+COPY dashboard/static/package.json ./
+COPY dashboard/static/tsconfig.json ./
+
+RUN npm install
+
+COPY dashboard/static/app.ts ./
+COPY dashboard/static/index.html ./
+COPY dashboard/static/style.css ./
+COPY dashboard/static/fonts ./fonts
+
+RUN npx tsc
+
+# Stage 2: Build Go tokka binary
 FROM golang:1.24.2-bullseye AS builder
 
 WORKDIR /app
@@ -8,15 +25,13 @@ RUN go mod download
 
 COPY . .
 
-RUN make all
+ARG TARGETOS
+ARG TARGETARCH
 
-# Stage 2: Final minimal image
-FROM busybox:1.35.0-uclibc AS busybox
-FROM gcr.io/distroless/base-debian12 AS runtime
+RUN make all GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
-COPY --from=busybox /bin/sh /bin/sh
-COPY --from=busybox /bin/mkdir /bin/mkdir
-COPY --from=busybox /bin/cat /bin/cat
+# Stage 3: Final minimal image
+FROM debian:12-slim AS runtime
 
 WORKDIR /app
 
@@ -24,6 +39,11 @@ COPY --from=builder /app/.bin/tokka /bin/tokka
 COPY --from=builder /app/build/plugins /tokka/plugins
 COPY --from=builder /app/build/middlewares /tokka/middlewares
 
-EXPOSE 8090 8095 9100 9464
+COPY --from=dashboard-builder /app/dist /dashboard/static/dist
+COPY --from=dashboard-builder /app/index.html /dashboard/static/index.html
+COPY --from=dashboard-builder /app/style.css /dashboard/static/style.css
+COPY --from=dashboard-builder /app/fonts /dashboard/static/fonts
+
+EXPOSE 7805/tcp 7806/tcp
 
 CMD ["/bin/tokka"]

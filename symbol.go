@@ -6,7 +6,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func loadSymbol[T interface{}](path, symbol string, log *zap.Logger) T {
+func loadSymbol[T any](path, symbol string, log *zap.Logger) T {
 	var zero T
 
 	log = log.With(zap.String("path", path))

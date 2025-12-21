@@ -4,7 +4,7 @@ import "sync"
 
 type CorePlugin interface {
 	Name() string
-	Init(cfg map[string]interface{}) error
+	Init(cfg map[string]any) error
 	Start() error
 	Stop() error
 }
@@ -16,6 +16,8 @@ var (
 	muCores      sync.RWMutex
 )
 
+// RegisterCorePlugin adds core plugin factory to registry.
+// This function should only be used by core plugin implementations.
 func RegisterCorePlugin(name string, factory func() CorePlugin) {
 	coreRegistry[name] = factory
 }
@@ -28,7 +30,7 @@ func createCorePlugin(name string) CorePlugin {
 	return nil
 }
 
-func registerActiveCore(name string, plugin CorePlugin) {
+func registerActiveCorePlugin(name string, plugin CorePlugin) {
 	muCores.Lock()
 	defer muCores.Unlock()
 	activeCores[name] = plugin

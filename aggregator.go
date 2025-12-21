@@ -3,6 +3,7 @@ package tokka
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"go.uber.org/zap"
 )
@@ -13,14 +14,14 @@ const (
 )
 
 type aggregator interface {
-	aggregate(responses [][]byte, mode string, allowPartialResults bool) []byte
+	aggregate(responses []UpstreamResponse, mode string, allowPartialResults bool) []byte
 }
 
 type defaultAggregator struct {
 	log *zap.Logger
 }
 
-func (a *defaultAggregator) aggregate(responses [][]byte, mode string, allowPartialResults bool) []byte {
+func (a *defaultAggregator) aggregate(responses []UpstreamResponse, mode string, allowPartialResults bool) []byte {
 	switch mode {
 	case strategyMerge:
 		res, err := a.doMerge(responses, allowPartialResults)
@@ -31,7 +32,7 @@ func (a *defaultAggregator) aggregate(responses [][]byte, mode string, allowPart
 
 		return res
 	case strategyArray:
-		res, err := a.doArray(responses)
+		res, err := a.doArray(responses, allowPartialResults)
 		if err != nil {
 			a.log.Error("cannot make array from responses", zap.Error(err))
 			return nil
@@ -39,31 +40,48 @@ func (a *defaultAggregator) aggregate(responses [][]byte, mode string, allowPart
 
 		return res
 	default:
+		a.log.Error("unknown aggregation strategy", zap.String("strategy", mode))
 		return nil
 	}
 }
 
-func (a *defaultAggregator) doMerge(responses [][]byte, allowPartialResults bool) ([]byte, error) {
-	merged := make(map[string]interface{})
+func (a *defaultAggregator) doMerge(responses []UpstreamResponse, allowPartialResults bool) ([]byte, error) {
+	merged := make(map[string]any)
 
 	for _, resp := range responses {
-		var obj map[string]interface{}
-		if err := json.Unmarshal(resp, &obj); err != nil {
+		var obj map[string]any
+
+		if resp.Body == nil {
+			continue
+		}
+
+		if resp.Err != nil {
 			if allowPartialResults {
 				a.log.Warn(
-					"failed to unmarshal response (partial results allowed)",
+					"failed to unmarshal response",
+					zap.Bool("allow_partial_results", allowPartialResults),
+					zap.Error(resp.Err),
+				)
+			} else {
+				return nil, fmt.Errorf("one or more responses failed: %w", resp.Err)
+			}
+		}
+
+		if err := json.Unmarshal(resp.Body, &obj); err != nil || resp.Err != nil {
+			if allowPartialResults {
+				a.log.Warn(
+					"failed to unmarshal response",
+					zap.Bool("allow_partial_results", allowPartialResults),
 					zap.Error(err),
 				)
 
 				continue
 			}
 
-			return nil, fmt.Errorf("cannot unmarshal response (partial results not allowed): %w", err)
+			return nil, fmt.Errorf("cannot unmarshal response: %w", err)
 		}
 
-		for k, v := range obj {
-			merged[k] = v
-		}
+		maps.Copy(merged, obj)
 	}
 
 	res, err := json.Marshal(merged)
@@ -74,11 +92,29 @@ func (a *defaultAggregator) doMerge(responses [][]byte, allowPartialResults bool
 	return res, nil
 }
 
-func (a *defaultAggregator) doArray(responses [][]byte) ([]byte, error) {
+func (a *defaultAggregator) doArray(responses []UpstreamResponse, allowPartialResults bool) ([]byte, error) {
 	var arr []json.RawMessage
 
 	for _, resp := range responses {
-		arr = append(arr, json.RawMessage(resp))
+		if resp.Body == nil {
+			continue
+		}
+
+		if resp.Err != nil {
+			if allowPartialResults {
+				a.log.Warn(
+					"failed to unmarshal response",
+					zap.Bool("allow_partial_results", allowPartialResults),
+					zap.Error(resp.Err),
+				)
+
+				continue
+			}
+
+			return nil, fmt.Errorf("one or more responses failed: %w", resp.Err)
+		}
+
+		arr = append(arr, resp.Body)
 	}
 
 	res, err := json.Marshal(arr)

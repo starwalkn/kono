@@ -1,0 +1,22 @@
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Linter configuration file
+.golangci.yml
+
+# Documentation files
+docs
+
+# Built middlewares and plugins
+build/middlewares
+build/plugins
+
+!build/Dockerfile
+
+**/node_modules
+**/dist
+.git
