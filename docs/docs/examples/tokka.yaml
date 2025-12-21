@@ -44,6 +44,15 @@ routes:
         forward_headers:
           - "X-*"
         policy:
+          allowed_statuses: [200, 404]
+          require_body: true
+          map_status_codes:
+            403: 404
+          max_response_body_size: 4096
+          retry:
+            max_retries: 3
+            retry_on_statuses: [500, 502, 503]
+            backoff_delay: 1s
 
       - url: http://profile-service.local/v1/details
         method: GET

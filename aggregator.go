@@ -1,7 +1,5 @@
 package tokka
 
-//go:generate mockgen -source=aggregator.go -destination=mock/aggregator.go -package=mock aggregator
-
 import (
 	"encoding/json"
 	"fmt"

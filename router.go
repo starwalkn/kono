@@ -35,7 +35,7 @@ type Route struct {
 }
 
 func newDefaultRouter(routesCount int, log *zap.Logger) *Router {
-	metrics := metric.New()
+	metrics := metric.NewVictoria()
 
 	return &Router{
 		dispatcher: &defaultDispatcher{
@@ -149,13 +149,14 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 
 	for _, cfg := range cfgs {
 		policy := UpstreamPolicy{
-			AllowedStatuses: cfg.Policy.AllowedStatuses,
-			AllowEmptyBody:  cfg.Policy.AllowEmptyBody,
-			MapStatusCodes:  cfg.Policy.MapStatusCodes,
+			AllowedStatuses:     cfg.Policy.AllowedStatuses,
+			RequireBody:         cfg.Policy.RequireBody,
+			MapStatusCodes:      cfg.Policy.MapStatusCodes,
+			MaxResponseBodySize: cfg.Policy.MaxResponseBodySize,
 			RetryPolicy: UpstreamRetryPolicy{
 				MaxRetries:      cfg.Policy.RetryConfig.MaxRetries,
 				RetryOnStatuses: cfg.Policy.RetryConfig.RetryOnStatuses,
-				BackoffMs:       cfg.Policy.RetryConfig.BackoffMs,
+				BackoffDelay:    cfg.Policy.RetryConfig.BackoffDelay,
 			},
 		}
 
@@ -273,6 +274,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		// --- 2. Upstream dispatch ---
 		responses := r.dispatcher.dispatch(rt, req)
+		if responses == nil {
+			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
+			http.Error(w, jsonErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
+
+			return
+		}
 
 		r.log.Debug("dispatched responses", zap.Any("responses", responses))
 

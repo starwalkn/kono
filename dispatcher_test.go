@@ -2,6 +2,8 @@ package tokka
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,16 +14,6 @@ import (
 
 	"go.uber.org/zap"
 )
-
-type testMetrics struct{}
-
-func (m *testMetrics) IncRequestsTotal()                          {}
-func (m *testMetrics) UpdateRequestsDuration(_ time.Time)         {}
-func (m *testMetrics) IncResponsesTotal(_ int)                    {}
-func (m *testMetrics) IncRequestsInFlight()                       {}
-func (m *testMetrics) DecRequestsInFlight()                       {}
-func (m *testMetrics) IncFailedRequestsTotal(_ metric.FailReason) {}
-func (m *testMetrics) IncCounter(_ string, _ ...zap.Field)        {}
 
 func TestDispatcher_Dispatch_Success(t *testing.T) {
 	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,13 +30,13 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 
 	d := &defaultDispatcher{
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	route := &Route{
 		Upstreams: []Upstream{
-			&httpUpstream{url: upstreamA.URL, timeout: 1000, client: http.DefaultClient},
-			&httpUpstream{url: upstreamB.URL, timeout: 1000, client: http.DefaultClient},
+			&httpUpstream{url: upstreamA.URL, timeout: 1000 * time.Millisecond, client: http.DefaultClient},
+			&httpUpstream{url: upstreamB.URL, timeout: 1000 * time.Millisecond, client: http.DefaultClient},
 		},
 	}
 
@@ -73,7 +65,7 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 
 	d := &defaultDispatcher{
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	route := &Route{
@@ -82,7 +74,7 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 				url:                 upstreamA.URL,
 				forwardQueryStrings: []string{"foo"},
 				forwardHeaders:      []string{"X-Test"},
-				timeout:             500,
+				timeout:             500 * time.Millisecond,
 				client:              http.DefaultClient,
 			},
 		},
@@ -107,7 +99,7 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 
 	d := &defaultDispatcher{
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	route := &Route{
@@ -115,7 +107,7 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 			&httpUpstream{
 				url:     upstreamA.URL,
 				method:  http.MethodPost,
-				timeout: 500,
+				timeout: 500 * time.Millisecond,
 				client:  http.DefaultClient,
 			},
 		},
@@ -127,5 +119,84 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 
 	if string(results[0].Body) != "hello" {
 		t.Errorf("expected 'hello', got %q", results[0].Body)
+	}
+}
+
+func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+	}))
+	defer upstreamA.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Route{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				url:     upstreamA.URL,
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				client:  http.DefaultClient,
+			},
+		},
+	}
+
+	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+
+	results := d.dispatch(route, originalRequest)
+
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	if !errors.Is(results[0].Err, context.DeadlineExceeded) {
+		t.Errorf("expected timeout error, got %v", results[0].Err)
+	}
+}
+
+func TestDispatcher_Dispatch_MapStatusPolicy(t *testing.T) {
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstreamA.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Route{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				url:     upstreamA.URL,
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				client:  http.DefaultClient,
+				policy: UpstreamPolicy{
+					MapStatusCodes: map[int]int{
+						404: 502, // NotFound to InternalServerError
+					},
+				},
+			},
+		},
+	}
+
+	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+
+	results := d.dispatch(route, originalRequest)
+
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	if results[0].Err != nil {
+		t.Errorf("expected no error, got %v", results[0].Err)
+	}
+
+	if results[0].Status != 502 {
+		t.Errorf("expected status 502, got %d", results[0].Status)
 	}
 }

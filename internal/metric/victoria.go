@@ -15,7 +15,7 @@ type victoriaMetrics struct {
 	FailedRequestsTotal map[FailReason]*metrics.Counter
 }
 
-func New() Metrics {
+func NewVictoria() Metrics {
 	return &victoriaMetrics{
 		RequestsTotal:    metrics.NewCounter("tokka_requests_total"),
 		RequestsDuration: metrics.NewSummary("tokka_requests_duration_seconds"),
@@ -31,9 +31,11 @@ func New() Metrics {
 		},
 		RequestsInFlight: metrics.NewGauge(`tokka_requests_in_flight`, nil),
 		FailedRequestsTotal: map[FailReason]*metrics.Counter{
-			FailReasonGatewayError:   metrics.NewCounter(`tokka_failed_requests_total{reason="gateway_error"}`),
-			FailReasonUpstreamError:  metrics.NewCounter(`tokka_failed_requests_total{reason="upstream_error"}`),
-			FailReasonNoMatchedRoute: metrics.NewCounter(`tokka_failed_requests_total{reason="no_matched_route"}`),
+			FailReasonGatewayError:    metrics.NewCounter(`tokka_failed_requests_total{reason="gateway_error"}`),
+			FailReasonUpstreamError:   metrics.NewCounter(`tokka_failed_requests_total{reason="upstream_error"}`),
+			FailReasonNoMatchedRoute:  metrics.NewCounter(`tokka_failed_requests_total{reason="no_matched_route"}`),
+			FailReasonBodyTooLarge:    metrics.NewCounter(`tokka_failed_requests_total{reason="body_too_large"}`),
+			FailReasonPolicyViolation: metrics.NewCounter(`tokka_failed_requests_total{reason="policy_violation"}`),
 		},
 	}
 }

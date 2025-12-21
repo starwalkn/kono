@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/starwalkn/tokka/internal/metric"
 	"go.uber.org/zap"
 )
 
@@ -67,7 +68,7 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 			},
 		},
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -93,7 +94,7 @@ func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
 	r := &Router{
 		Routes:  nil,
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/not-found", nil)
@@ -144,7 +145,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 			},
 		},
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/plug", nil)
@@ -185,7 +186,7 @@ func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
 			},
 		},
 		log:     zap.NewNop(),
-		metrics: &testMetrics{},
+		metrics: metric.NewNop(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/mw", nil)

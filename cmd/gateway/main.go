@@ -25,6 +25,10 @@ func main() {
 	cfg := tokka.LoadConfig(cfgPath)
 	log := logger.New(cfg.Debug)
 
+	if err := cfg.Validate(); err != nil {
+		log.Fatal("config validation error", zap.Error(err))
+	}
+
 	if cfg.Dashboard.Enable {
 		dashboardServer := dashboard.NewServer(&cfg, log.Named("dashboard"))
 		go dashboardServer.Start()

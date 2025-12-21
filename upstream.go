@@ -1,10 +1,9 @@
 package tokka
 
-//go:generate mockgen -source=upstream.go -destination=mock/upstream.go -package=mock Upstream
-
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 type Upstream interface {
@@ -15,16 +14,17 @@ type Upstream interface {
 }
 
 type UpstreamPolicy struct {
-	AllowedStatuses []int
-	AllowEmptyBody  bool
-	MapStatusCodes  map[int]int
-	RetryPolicy     UpstreamRetryPolicy
+	AllowedStatuses     []int
+	RequireBody         bool
+	MapStatusCodes      map[int]int
+	MaxResponseBodySize int64
+	RetryPolicy         UpstreamRetryPolicy
 }
 
 type UpstreamRetryPolicy struct {
 	MaxRetries      int
 	RetryOnStatuses []int
-	BackoffMs       int64
+	BackoffDelay    time.Duration
 }
 
 type UpstreamResponse struct {

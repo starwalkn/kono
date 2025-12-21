@@ -14,7 +14,7 @@ type httpUpstream struct {
 	name                string
 	url                 string
 	method              string
-	timeout             int64
+	timeout             time.Duration
 	headers             map[string]string
 	forwardHeaders      []string
 	forwardQueryStrings []string
@@ -36,7 +36,7 @@ func (u *httpUpstream) Call(ctx context.Context, original *http.Request, origina
 		Headers: make(http.Header, 0),
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(u.timeout)*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
 
 	req, err := u.newRequest(ctx, original, originalBody)
@@ -55,7 +55,12 @@ func (u *httpUpstream) Call(ctx context.Context, original *http.Request, origina
 	uresp.Status = hresp.StatusCode
 	uresp.Headers = hresp.Header.Clone()
 
-	body, err := io.ReadAll(hresp.Body)
+	var reader io.Reader = hresp.Body
+	if u.policy.MaxResponseBodySize > 0 {
+		reader = io.LimitReader(hresp.Body, u.policy.MaxResponseBodySize+1)
+	}
+
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		uresp.Err = err
 		return uresp
@@ -70,13 +75,26 @@ func (u *httpUpstream) callWithRetry(ctx context.Context, original *http.Request
 	resp := &UpstreamResponse{}
 
 	for attempt := 0; attempt <= retryPolicy.MaxRetries; attempt++ {
-		resp = u.Call(ctx, original, originalBody)
-		if resp.Err == nil && !slices.Contains(retryPolicy.RetryOnStatuses, resp.Status) {
-			break
-		}
+		select {
+		case <-ctx.Done():
+			resp.Err = ctx.Err()
+			return resp
+		default:
+			resp = u.Call(ctx, original, originalBody)
+			if resp.Err == nil && !slices.Contains(retryPolicy.RetryOnStatuses, resp.Status) {
+				break
+			}
 
-		if retryPolicy.BackoffMs > 0 {
-			time.Sleep(time.Duration(retryPolicy.BackoffMs) * time.Millisecond)
+			if retryPolicy.BackoffDelay > 0 {
+				select {
+				case <-time.After(retryPolicy.BackoffDelay):
+				case <-ctx.Done():
+					resp.Err = ctx.Err()
+					return resp
+				}
+
+				time.Sleep(retryPolicy.BackoffDelay)
+			}
 		}
 	}
 
@@ -154,11 +172,9 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
 
 	// Rewrite headers which exists in upstream headers configuration (rewriting only forwarded headers).
 	for header, value := range u.headers {
-		if !slices.Contains(u.forwardHeaders, header) {
-			continue
+		if slices.Contains(u.forwardHeaders, "*") || target.Header.Get(header) != "" {
+			target.Header.Set(header, value)
 		}
-
-		target.Header.Set(header, value)
 	}
 
 	// Always forward the Content-Type header.
