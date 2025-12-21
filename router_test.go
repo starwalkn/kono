@@ -64,7 +64,7 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 			{
 				Path:      "/test",
 				Method:    http.MethodGet,
-				Aggregate: "join",
+				Aggregate: "array",
 			},
 		},
 		log:     zap.NewNop(),
@@ -141,7 +141,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 				Path:      "/plug",
 				Method:    http.MethodGet,
 				Plugins:   []Plugin{reqPlugin, respPlugin},
-				Aggregate: "join",
+				Aggregate: "array",
 			},
 		},
 		log:     zap.NewNop(),

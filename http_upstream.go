@@ -3,6 +3,7 @@ package tokka
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -63,6 +64,11 @@ func (u *httpUpstream) Call(ctx context.Context, original *http.Request, origina
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		uresp.Err = err
+		return uresp
+	}
+
+	if u.policy.MaxResponseBodySize > 0 && int64(len(body)) > u.policy.MaxResponseBodySize {
+		uresp.Err = fmt.Errorf("response body larger than limit of %d bytes", u.policy.MaxResponseBodySize)
 		return uresp
 	}
 

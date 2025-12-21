@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -157,7 +158,7 @@ func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
 	}
 }
 
-func TestDispatcher_Dispatch_MapStatusPolicy(t *testing.T) {
+func TestDispatcher_Dispatch_MapStatusCodesPolicy(t *testing.T) {
 	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -198,5 +199,165 @@ func TestDispatcher_Dispatch_MapStatusPolicy(t *testing.T) {
 
 	if results[0].Status != 502 {
 		t.Errorf("expected status 502, got %d", results[0].Status)
+	}
+}
+
+func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
+	var (
+		responseText        string = "abcdefghijklmnopqrstuvwxyz"
+		maxResponseBodySize int64  = 10
+	)
+
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(responseText))
+	}))
+	defer upstreamA.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Route{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				url:     upstreamA.URL,
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				client:  http.DefaultClient,
+				policy: UpstreamPolicy{
+					MaxResponseBodySize: int64(maxResponseBodySize),
+				},
+			},
+		},
+	}
+
+	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+
+	results := d.dispatch(route, originalRequest)
+
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	if results[0].Err == nil {
+		t.Errorf("expected error, got nil")
+	}
+
+	if results[0].Err.Error() != fmt.Sprintf("response body larger than limit of %d bytes", maxResponseBodySize) {
+		t.Errorf("expected error message 'response body larger than limit of %d bytes', got %v", maxResponseBodySize, results[0].Err)
+	}
+}
+
+func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`Never gonna give you up
+			Never gonna let you down
+			Never gonna run around and desert you`))
+	}))
+	defer upstreamA.Close()
+
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstreamB.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Route{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				url:     upstreamA.URL,
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				client:  http.DefaultClient,
+				policy: UpstreamPolicy{
+					RequireBody: true,
+				},
+			},
+			&httpUpstream{
+				url:     upstreamB.URL,
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				client:  http.DefaultClient,
+				policy: UpstreamPolicy{
+					RequireBody: true,
+				},
+			},
+		},
+	}
+
+	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+
+	results := d.dispatch(route, originalRequest)
+
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	if results[0].Err != nil {
+		t.Errorf("expected no error, got %v", results[0].Err)
+	}
+
+	if results[1].Err == nil || results[1].Err.Error() != "empty body not allowed by upstream policy" {
+		t.Errorf("expected policy violation error, got %v", results[1].Err)
+	}
+}
+
+func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
+	attemptsCount := 0
+
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attemptsCount++
+
+		if attemptsCount <= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamA.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Route{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				url:     upstreamA.URL,
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				client:  http.DefaultClient,
+				policy: UpstreamPolicy{
+					RetryPolicy: UpstreamRetryPolicy{
+						MaxRetries:      3,
+						RetryOnStatuses: []int{http.StatusInternalServerError},
+						BackoffDelay:    10 * time.Millisecond,
+					},
+				},
+			},
+		},
+	}
+
+	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+
+	results := d.dispatch(route, originalRequest)
+
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	retriesCount := attemptsCount - 1
+
+	if retriesCount > route.Upstreams[0].Policy().RetryPolicy.MaxRetries {
+		t.Errorf("retries count %d exceeds max retries %d", retriesCount, route.Upstreams[0].Policy().RetryPolicy.MaxRetries)
 	}
 }
