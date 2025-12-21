@@ -9,7 +9,7 @@ import (
 type Upstream interface {
 	Name() string
 	Policy() UpstreamPolicy
-	Call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse
+	call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse
 	callWithRetry(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse
 }
 

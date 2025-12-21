@@ -227,7 +227,7 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 				timeout: 500 * time.Millisecond,
 				client:  http.DefaultClient,
 				policy: UpstreamPolicy{
-					MaxResponseBodySize: int64(maxResponseBodySize),
+					MaxResponseBodySize: maxResponseBodySize,
 				},
 			},
 		},

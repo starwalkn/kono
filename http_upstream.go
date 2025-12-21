@@ -32,7 +32,7 @@ func (u *httpUpstream) Policy() UpstreamPolicy {
 	return u.policy
 }
 
-func (u *httpUpstream) Call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse {
+func (u *httpUpstream) call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse {
 	uresp := &UpstreamResponse{
 		Headers: make(http.Header, 0),
 	}
@@ -86,7 +86,7 @@ func (u *httpUpstream) callWithRetry(ctx context.Context, original *http.Request
 			resp.Err = ctx.Err()
 			return resp
 		default:
-			resp = u.Call(ctx, original, originalBody)
+			resp = u.call(ctx, original, originalBody)
 			if resp.Err == nil && !slices.Contains(retryPolicy.RetryOnStatuses, resp.Status) {
 				break
 			}
