@@ -3,7 +3,7 @@ module github.com/starwalkn/tokka
 go 1.25.4
 
 require (
-	github.com/BurntSushi/toml v1.5.0
+	github.com/BurntSushi/toml v1.6.0
 	github.com/VictoriaMetrics/metrics v1.40.2
 	github.com/oklog/ulid/v2 v2.1.1
 	go.uber.org/zap v1.27.1
