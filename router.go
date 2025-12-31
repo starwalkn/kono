@@ -54,28 +54,40 @@ func newDefaultRouter(routesCount int, log *zap.Logger) *Router {
 	}
 }
 
-func NewRouter(cfgs []RouteConfig, globalMiddlewareCfgs []MiddlewareConfig, features []FeatureConfig, log *zap.Logger) *Router {
-	// --- global middlewares ---
-	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareCfgs, log)
+type RouterConfigSet struct {
+	Version     string
+	Routes      []RouteConfig
+	Middlewares []MiddlewareConfig
+	Features    []FeatureConfig
+}
 
-	router := newDefaultRouter(len(cfgs), log)
+func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
+	var (
+		routeConfigs            = routerConfigSet.Routes
+		globalMiddlewareConfigs = routerConfigSet.Middlewares
+		featureConfigs          = routerConfigSet.Features
+	)
 
-	for _, fcfg := range features {
+	// Global middlewares.
+	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareConfigs, log)
+
+	router := newDefaultRouter(len(routeConfigs), log)
+
+	for _, fcfg := range featureConfigs {
+		//nolint:gocritic // for the future
 		switch fcfg.Name {
 		case "ratelimit":
-			rl := ratelimit.New(fcfg.Config)
+			router.rateLimiter = ratelimit.New(fcfg.Config)
 
-			err := rl.Start()
+			err := router.rateLimiter.Start()
 			if err != nil {
 				log.Fatal("failed to start ratelimit feature", zap.Error(err))
 			}
-
-			router.rateLimiter = rl
 		}
 	}
 
-	for _, rcfg := range cfgs {
-		// --- route middlewares ---
+	for _, rcfg := range routeConfigs {
+		// Per-route middlewares.
 		routeMiddlewares := make([]Middleware, 0, len(rcfg.Middlewares))
 		for _, mcfg := range rcfg.Middlewares {
 			soMiddleware := loadMiddlewareFromSO(mcfg.Path, mcfg.Config, log)
@@ -250,21 +262,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer r.metrics.IncRequestsTotal()
 	defer r.metrics.UpdateRequestsDuration(start)
 
-	// // --- 0. Global (core) plugins, e.g. rate limiter ---
-	// if corePlugin := getActiveCorePlugin("ratelimit"); corePlugin != nil { //nolint:nolintlint,nestif
-	// 	if rateLimiter, ok := corePlugin.(contract.RateLimit); ok {
-	// 		ip := req.Header.Get("X-Forwarded-For")
-	// 		if ip == "" {
-	// 			ip = req.RemoteAddr
-	// 		}
-
-	// 		if !rateLimiter.Allow(ip) {
-	// 			http.Error(w, jsonErrRateLimitExceeded, http.StatusTooManyRequests)
-	// 			return
-	// 		}
-	// 	}
-	// }
-
 	if r.rateLimiter != nil {
 		ip := req.Header.Get("X-Forwarded-For")
 		if ip == "" {
@@ -290,7 +287,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		tctx := newContext(req) // Tokka context.
 
-		// --- 1. Request-phase plugins ---
+		// Request-phase plugins.
 		for _, p := range rt.Plugins {
 			if p.Type() != PluginTypeRequest {
 				continue
@@ -301,7 +298,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			p.Execute(tctx)
 		}
 
-		// --- 2. Upstream dispatch ---
+		// Upstream dispatch.
 		responses := r.dispatcher.dispatch(rt, req)
 		if responses == nil {
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
@@ -319,7 +316,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			zap.Any("aggregated", aggregated),
 		)
 
-		// --- 3. Response-phase plugins ---
+		// Response-phase plugins.
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader(aggregated)),
@@ -339,7 +336,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		r.metrics.IncResponsesTotal(tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
 
-		// --- 4. Write final output ---
+		// Write final output.
 		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse
 	})
 

@@ -52,7 +52,7 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 			upstreamPolicy := u.Policy()
 
-			resp := u.callWithRetry(original.Context(), original, originalBody, upstreamPolicy.RetryPolicy)
+			resp := u.Call(original.Context(), original, originalBody, upstreamPolicy.RetryPolicy)
 			if resp.Err != nil {
 				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
 				d.log.Error("cannot call upstream",

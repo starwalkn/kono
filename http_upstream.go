@@ -77,7 +77,7 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 	return uresp
 }
 
-func (u *httpUpstream) callWithRetry(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse {
+func (u *httpUpstream) Call(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse {
 	resp := &UpstreamResponse{}
 
 	for attempt := 0; attempt <= retryPolicy.MaxRetries; attempt++ {
