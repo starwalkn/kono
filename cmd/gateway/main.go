@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/VictoriaMetrics/metrics"
+	"go.uber.org/zap"
+
 	"github.com/starwalkn/tokka"
 	"github.com/starwalkn/tokka/dashboard"
 	"github.com/starwalkn/tokka/internal/logger"
-	_ "github.com/starwalkn/tokka/internal/plugin/ratelimit"
 )
 
 func main() {
@@ -25,22 +23,26 @@ func main() {
 	cfg := tokka.LoadConfig(cfgPath)
 	log := logger.New(cfg.Debug)
 
-	if err := cfg.Validate(); err != nil {
-		log.Fatal("config validation error", zap.Error(err))
-	}
-
 	if cfg.Dashboard.Enable {
 		dashboardServer := dashboard.NewServer(&cfg, log.Named("dashboard"))
 		go dashboardServer.Start()
 	}
 
-	mainRouter := tokka.NewRouter(cfg.Routes, cfg.Middlewares, log.Named("router"))
+	routerConfigSet := tokka.RouterConfigSet{
+		Version:     cfg.Version,
+		Routes:      cfg.Routes,
+		Middlewares: cfg.Middlewares,
+		Features:    cfg.Features,
+		Metrics:     cfg.Server.Metrics,
+	}
+	mainRouter := tokka.NewRouter(routerConfigSet, log.Named("router"))
 
 	mux := http.NewServeMux()
 
-	if cfg.Server.EnableMetrics {
+	if cfg.Server.Metrics.Enabled {
 		mux.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			metrics.WritePrometheus(w, true)
+			// promhttp.Handler()
 		}))
 	}
 
@@ -49,8 +51,8 @@ func main() {
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      mux,
-		ReadTimeout:  time.Duration(cfg.Server.Timeout) * time.Second,
-		WriteTimeout: time.Duration(cfg.Server.Timeout) * time.Second,
+		ReadTimeout:  cfg.Server.Timeout,
+		WriteTimeout: cfg.Server.Timeout,
 	}
 
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

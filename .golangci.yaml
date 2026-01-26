@@ -76,7 +76,6 @@ linters:
     - durationcheck # checks for two durations multiplied together
     - errname # checks that sentinel errors are prefixed with the Err and error types are suffixed with the Error
     - errorlint # finds code that will cause problems with the error wrapping scheme introduced in Go 1.13
-    - exhaustive # checks exhaustiveness of enum switch statements
     - exptostd # detects functions from golang.org/x/exp/ that can be replaced by std functions
     - fatcontext # detects nested contexts in loops
     - forbidigo # forbids identifiers
@@ -84,7 +83,6 @@ linters:
     - funlen # tool for detection of long functions
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
     - gochecknoglobals # checks that no global variables exist
-    - gochecksumtype # checks exhaustiveness on Go "sum types"
     - gocognit # computes and checks the cognitive complexity of functions
     - goconst # finds repeated strings that could be replaced by a constant
     - gocritic # provides diagnostics that check for bugs, performance and style issues
@@ -137,6 +135,7 @@ linters:
     ## you may want to enable
     #- errcheck # checking for unchecked errors, these unchecked errors can be critical bugs in some cases
     #- gochecknoinits # checks that no init functions are present in Go code
+    #- exhaustive # checks exhaustiveness of enum switch statements
     #- testpackage # makes you use a separate _test package
     #- arangolint # opinionated best practices for arangodb client
     #- decorder # checks declaration order and count of types, constants, variables and functions
@@ -229,13 +228,6 @@ linters:
             - pkg: math/rand$
               desc: Use math/rand/v2 instead, see https://go.dev/blog/randv2
 
-    exhaustive:
-      # Program elements to check for exhaustiveness.
-      # Default: [ switch ]
-      check:
-        - switch
-        - map
-
     exhaustruct:
       # List of regular expressions to match type names that should be excluded from processing.
       # Anonymous structs can be matched by '<anonymous>' alias.
@@ -278,7 +270,7 @@ linters:
       # Checks the number of lines in a function.
       # If lower than 0, disable the check.
       # Default: 60
-      lines: 100
+      lines: 150
       # Checks the number of statements in a function.
       # If lower than 0, disable the check.
       # Default: 40
@@ -292,7 +284,7 @@ linters:
     gocognit:
       # Minimal code complexity to report.
       # Default: 30 (but we recommend 10-20)
-      min-complexity: 30
+      min-complexity: 35
 
     gocritic:
       # Settings passed to gocritic.

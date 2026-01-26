@@ -2,34 +2,42 @@ package tokka
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	defaultUpstreamTimeout = 3 * time.Second
+	defaultServerTimeout   = 5 * time.Second
+)
+
 type GatewayConfig struct {
-	Schema      string             `json:"schema" yaml:"schema" toml:"schema"`
-	Name        string             `json:"name" yaml:"name" toml:"name"`
-	Version     string             `json:"version" yaml:"version" toml:"version"`
-	Debug       bool               `json:"debug" yaml:"debug" toml:"debug"`
-	Server      ServerConfig       `json:"server" yaml:"server" toml:"server"`
-	Dashboard   DashboardConfig    `json:"dashboard" yaml:"dashboard" toml:"dashboard"`
-	Plugins     []CorePluginConfig `json:"plugins" yaml:"plugins" toml:"plugins"`
-	Middlewares []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
-	Routes      []RouteConfig      `json:"routes" yaml:"routes" toml:"routes"`
+	ConfigVersion string             `json:"config_version" yaml:"config_version" toml:"config_version"`
+	Name          string             `json:"name" yaml:"name" toml:"name"`
+	Version       string             `json:"version" yaml:"version" toml:"version"`
+	Debug         bool               `json:"debug" yaml:"debug" toml:"debug"`
+	Server        ServerConfig       `json:"server" yaml:"server" toml:"server"`
+	Dashboard     DashboardConfig    `json:"dashboard" yaml:"dashboard" toml:"dashboard"`
+	Features      []FeatureConfig    `json:"features" yaml:"features" toml:"features"`
+	Middlewares   []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
+	Routes        []RouteConfig      `json:"routes" yaml:"routes" toml:"routes"`
 }
 
 type ServerConfig struct {
-	Port          int  `json:"port" yaml:"port" toml:"port"`
-	Timeout       int  `json:"timeout" yaml:"timeout" toml:"timeout"`
-	EnableMetrics bool `json:"enable_metrics" yaml:"enable_metrics" toml:"enable_metrics"`
+	Port    int           `json:"port" yaml:"port" toml:"port"`
+	Timeout time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
+	Metrics MetricsConfig `json:"metrics" yaml:"metrics" toml:"metrics"`
+}
+
+type MetricsConfig struct {
+	Enabled  bool   `json:"enabled" yaml:"enabled" toml:"enabled"`
+	Provider string `json:"provider" yaml:"provider" toml:"provider"`
 }
 
 type DashboardConfig struct {
@@ -39,14 +47,18 @@ type DashboardConfig struct {
 }
 
 type RouteConfig struct {
-	Path                string             `json:"path" yaml:"path" toml:"path"`
-	Method              string             `json:"method" yaml:"method" toml:"method"`
-	Plugins             []PluginConfig     `json:"plugins" yaml:"plugins" toml:"plugins"`
-	Middlewares         []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
-	Upstreams           []UpstreamConfig   `json:"upstreams" yaml:"upstreams" toml:"upstreams"`
-	Aggregate           string             `json:"aggregate" yaml:"aggregate" toml:"aggregate"`
-	Transform           string             `json:"transform" yaml:"transform" toml:"transform"`
-	AllowPartialResults bool               `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
+	Path                 string             `json:"path" yaml:"path" toml:"path"`
+	Method               string             `json:"method" yaml:"method" toml:"method"`
+	Plugins              []PluginConfig     `json:"plugins" yaml:"plugins" toml:"plugins"`
+	Middlewares          []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
+	Upstreams            []UpstreamConfig   `json:"upstreams" yaml:"upstreams" toml:"upstreams"`
+	Aggregation          AggregationConfig  `json:"aggregation" yaml:"aggregation" toml:"aggregation"`
+	MaxParallelUpstreams int64              `json:"max_parallel_upstreams" yaml:"max_parallel_upstreams" toml:"max_parallel_upstreams"`
+}
+
+type AggregationConfig struct {
+	Strategy            string `json:"strategy" yaml:"strategy" toml:"strategy"`
+	AllowPartialResults bool   `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
 }
 
 type UpstreamConfig struct {
@@ -65,13 +77,20 @@ type UpstreamPolicyConfig struct {
 	MapStatusCodes      map[int]int `json:"map_status_codes" yaml:"map_status_codes" toml:"map_status_codes"`
 	MaxResponseBodySize int64       `json:"max_response_body_size" yaml:"max_response_body_size" toml:"max_response_body_size"`
 
-	RetryConfig UpstreamRetryPolicyConfig `json:"retry" yaml:"retry" toml:"retry"`
+	RetryConfig          UpstreamRetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
+	CircuitBreakerConfig UpstreamCircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
 }
 
-type UpstreamRetryPolicyConfig struct {
+type UpstreamRetryConfig struct {
 	MaxRetries      int           `json:"max_retries" yaml:"max_retries" toml:"max_retries"`
 	RetryOnStatuses []int         `json:"retry_on_statuses" yaml:"retry_on_statuses" toml:"retry_on_statuses"`
 	BackoffDelay    time.Duration `json:"backoff_delay" yaml:"backoff_delay" toml:"backoff_delay"`
+}
+
+type UpstreamCircuitBreakerConfig struct {
+	Enabled      bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
+	MaxFailures  int           `json:"max_failures" yaml:"max_failures" toml:"max_failures"`
+	ResetTimeout time.Duration `json:"reset_timeout" yaml:"reset_timeout" toml:"reset_timeout"`
 }
 
 type PluginConfig struct {
@@ -88,7 +107,7 @@ type MiddlewareConfig struct {
 	Override      bool           `json:"override" yaml:"override" toml:"override"`
 }
 
-type CorePluginConfig struct {
+type FeatureConfig struct {
 	Name   string         `json:"name" yaml:"name" toml:"name"`
 	Config map[string]any `json:"config" yaml:"config" toml:"config"`
 }
@@ -118,127 +137,26 @@ func LoadConfig(path string) GatewayConfig {
 		log.Fatal("unknown config file extension:", filepath.Ext(path))
 	}
 
-	// Loading core-level plugins.
-	for _, pcfg := range cfg.Plugins {
-		p := createCorePlugin(pcfg.Name)
-		if p == nil {
-			log.Println("failed to create core plugin:", pcfg.Name)
-			continue
+	return ensureDefaults(cfg)
+}
+
+// ensureDefaults ensures that default values are used in required configuration fields if they are not explicitly set.
+func ensureDefaults(cfg GatewayConfig) GatewayConfig {
+	if cfg.Server.Timeout == 0 {
+		cfg.Server.Timeout = defaultServerTimeout
+	}
+
+	for i := range cfg.Routes {
+		if cfg.Routes[i].MaxParallelUpstreams < 1 {
+			cfg.Routes[i].MaxParallelUpstreams = 2 * int64(runtime.NumCPU()) //nolint:mnd // shut up mnd
 		}
 
-		if err = p.Init(pcfg.Config); err != nil {
-			log.Fatal("failed to init core plugin:", err)
+		for j := range cfg.Routes[i].Upstreams {
+			if cfg.Routes[i].Upstreams[j].Timeout == 0 {
+				cfg.Routes[i].Upstreams[j].Timeout = defaultUpstreamTimeout
+			}
 		}
-
-		if err = p.Start(); err != nil {
-			log.Fatal("failed to start core plugin:", err)
-		}
-
-		registerActiveCorePlugin(pcfg.Name, p)
 	}
 
 	return cfg
-}
-
-//nolint:gocognit,gocyclo,cyclop // to be replace by sub-methods in future
-func (cfg *GatewayConfig) Validate() error {
-	var errs []error
-
-	if cfg.Name == "" {
-		errs = append(errs, errors.New("gateway.name is required"))
-	}
-	if cfg.Version == "" {
-		errs = append(errs, errors.New("gateway.version is required"))
-	}
-
-	// Server config.
-	if cfg.Server.Port <= 0 || cfg.Server.Port > 65535 {
-		errs = append(errs, errors.New("server.port must be between 1 and 65535"))
-	}
-	if cfg.Server.Timeout <= 0 {
-		errs = append(errs, errors.New("server.timeout must be > 0"))
-	}
-
-	// Dashboard config.
-	if cfg.Dashboard.Enable {
-		if cfg.Dashboard.Port <= 0 || cfg.Dashboard.Port > 65535 {
-			errs = append(errs, errors.New("dashboard.port must be between 1 and 65535"))
-		}
-		if cfg.Dashboard.Timeout <= 0 {
-			errs = append(errs, errors.New("dashboard.timeout must be > 0"))
-		}
-	}
-
-	// Routes config.
-	for i, route := range cfg.Routes {
-		prefix := fmt.Sprintf("routes[%d]", i)
-
-		if route.Path == "" {
-			errs = append(errs, fmt.Errorf("%s.path is required", prefix))
-		}
-		if route.Method == "" {
-			errs = append(errs, fmt.Errorf("%s.method is required", prefix))
-		}
-		if len(route.Upstreams) == 0 {
-			errs = append(errs, fmt.Errorf("%s.upstreams must not be empty", prefix))
-		}
-
-		if route.Aggregate != "" && route.Aggregate != strategyArray && route.Aggregate != strategyMerge {
-			errs = append(errs, fmt.Errorf("%s.aggregate must be 'array' or 'merge'", prefix))
-		}
-
-		// Upstreams config.
-		for j, u := range route.Upstreams {
-			upPrefix := fmt.Sprintf("%s.upstreams[%d]", prefix, j)
-
-			if u.URL == "" {
-				errs = append(errs, fmt.Errorf("%s.url is required", upPrefix))
-			} else if _, err := url.Parse(u.URL); err != nil {
-				errs = append(errs, fmt.Errorf("%s.url is invalid: %w", upPrefix, err))
-			}
-
-			if u.Timeout <= 0 {
-				errs = append(errs, fmt.Errorf("%s.timeout must be > 0", upPrefix))
-			}
-
-			// Upstream policies config.
-			p := u.Policy
-
-			for _, code := range p.AllowedStatuses {
-				if code < 100 || code > 599 {
-					errs = append(errs, fmt.Errorf("%s.policy.allowed_status_codes contains invalid status %d", upPrefix, code))
-				}
-			}
-
-			for from, to := range p.MapStatusCodes {
-				if from < 100 || from > 599 || to < 100 || to > 599 {
-					errs = append(errs, fmt.Errorf("%s.policy.map_status_codes has invalid mapping %d -> %d", upPrefix, from, to))
-				}
-			}
-
-			if p.MaxResponseBodySize < 0 {
-				errs = append(errs, fmt.Errorf("%s.policy.max_response_body_size must be >= 0", upPrefix))
-			}
-
-			// Upstream retry policies config.
-			r := p.RetryConfig
-			if r.MaxRetries < 0 {
-				errs = append(errs, fmt.Errorf("%s.policy.retry.max_retries must be >= 0", upPrefix))
-			}
-			if r.BackoffDelay < 0 {
-				errs = append(errs, fmt.Errorf("%s.policy.retry.backoff_delay must be >= 0", upPrefix))
-			}
-			for _, code := range r.RetryOnStatuses {
-				if code < 100 || code > 599 {
-					errs = append(errs, fmt.Errorf("%s.policy.retry.retry_on_statuses contains invalid status %d", upPrefix, code))
-				}
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-
-	return nil
 }

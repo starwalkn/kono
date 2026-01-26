@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/starwalkn/tokka/internal/metric"
 )
@@ -24,7 +25,12 @@ type defaultDispatcher struct {
 	metrics metric.Metrics
 }
 
-// dispatch dispatches the incoming request to the upstreams and returns their responses.
+// dispatch sends the incoming HTTP request to all upstreams configured for the given route.
+// It reads and limits the request body, launches concurrent requests to upstreams using
+// a semaphore to control parallelism, applies upstream policies (like allowed statuses,
+// required body, status code mapping, max response size), updates metrics, and collects
+// the responses into a slice. Any policy violations or request errors are wrapped in
+// UpstreamError. The dispatcher waits for all upstream requests to complete before returning.
 func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []UpstreamResponse {
 	results := make([]UpstreamResponse, len(route.Upstreams))
 
@@ -42,7 +48,10 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 		return nil
 	}
 
-	var wg sync.WaitGroup
+	var (
+		wg  = sync.WaitGroup{}
+		sem = semaphore.NewWeighted(route.MaxParallelUpstreams)
+	)
 
 	for i, u := range route.Upstreams {
 		wg.Add(1)
@@ -50,14 +59,30 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 		go func(i int, u Upstream, originalBody []byte) {
 			defer wg.Done()
 
+			ctx := original.Context()
+
+			if err := sem.Acquire(ctx, 1); err != nil {
+				d.log.Error("cannot acquire semaphore", zap.Error(err))
+
+				results[i] = UpstreamResponse{
+					Err: &UpstreamError{
+						Kind: UpstreamInternal,
+						Err:  fmt.Errorf("semaphore acquire failed: %w", err),
+					},
+				}
+
+				return
+			}
+			defer sem.Release(1)
+
 			upstreamPolicy := u.Policy()
 
-			resp := u.callWithRetry(original.Context(), original, originalBody, upstreamPolicy.RetryPolicy)
+			resp := u.Call(ctx, original, originalBody, upstreamPolicy.RetryPolicy)
 			if resp.Err != nil {
 				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
-				d.log.Error("cannot call upstream",
+				d.log.Error("upstream request failed",
 					zap.String("name", u.Name()),
-					zap.Error(resp.Err),
+					zap.Error(resp.Err.Unwrap()),
 				)
 			}
 
@@ -81,7 +106,14 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 			if len(errs) > 0 {
 				d.metrics.IncFailedRequestsTotal(metric.FailReasonPolicyViolation)
-				resp.Err = errors.Join(errs...)
+
+				if resp.Err == nil {
+					resp.Err = &UpstreamError{
+						Err: errors.Join(errs...),
+					}
+				} else {
+					resp.Err.Err = errors.Join(resp.Err.Err, errors.Join(errs...))
+				}
 			}
 
 			results[i] = *resp

@@ -10,6 +10,7 @@ const (
 	FailReasonNoMatchedRoute  FailReason = "no_matched_route"
 	FailReasonPolicyViolation FailReason = "policy_violation"
 	FailReasonBodyTooLarge    FailReason = "body_too_large"
+	FailReasonUnknown         FailReason = "unknown"
 )
 
 type Metrics interface {

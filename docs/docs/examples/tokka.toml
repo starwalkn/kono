@@ -1,22 +1,24 @@
-schema = "v1"
+config_version = "v1"
 name = "Tokka Gateway"
 version = "0.0.1"
 debug = false
 
 [server]
 port = 7805
-timeout = 5000
-enable_metrics = true
+timeout = "20s"
+
+[server.metrics]
+enabled = true
+provider = "victoriametrics"
 
 [dashboard]
 enable = true
 port = 7806
-timeout = 5000
+timeout = "30s"
 
-[[plugins]]
+[[features]]
 name = "ratelimit"
-
-[plugins.config]
+[features.config]
 limit = 10
 window = 1
 
@@ -24,7 +26,6 @@ window = 1
 name = "recoverer"
 path = "/tokka/middlewares/recoverer.so"
 can_fail_on_load = false
-
 [middlewares.config]
 enabled = true
 
@@ -32,81 +33,106 @@ enabled = true
 name = "logger"
 path = "/tokka/middlewares/logger.so"
 can_fail_on_load = false
-
 [middlewares.config]
 enabled = true
+
+[[middlewares]]
+name = "auth"
+path = "/tokka/middlewares/auth.so"
+can_fail_on_load = false
+[middlewares.config]
+enabled = true
+issuer = "fake_issuer"
+audience = "fake_audience"
+alg = "HS256"
+hmac_secret = "fake_hmac_secret"
 
 [[routes]]
 path = "/api/users"
 method = "GET"
-aggregate = "merge"
+max_parallel_upstreams = 1
+[routes.aggregation]
+strategy = "merge"
 allow_partial_results = true
 
 [[routes.upstreams]]
 url = "http://user-service.local/v1/users"
 method = "GET"
-timeout = 3000
+timeout = "3s"
 forward_query_strings = ["*"]
 forward_headers = ["X-*"]
-
 [routes.upstreams.policy]
 allowed_statuses = [200, 404]
 require_body = true
 max_response_body_size = 4096
-
 [routes.upstreams.policy.map_status_codes]
-403 = 404
-
+"403" = 404
 [routes.upstreams.policy.retry]
 max_retries = 3
 retry_on_statuses = [500, 502, 503]
 backoff_delay = "1s"
+[routes.upstreams.policy.circuit_breaker]
+enabled = true
+max_failures = 5
+reset_timeout = "2s"
 
 [[routes.upstreams]]
 url = "http://profile-service.local/v1/details"
 method = "GET"
 forward_headers = ["X-Request-ID"]
+[routes.upstreams.policy.circuit_breaker]
+enabled = true
+max_failures = 5
+reset_timeout = "2s"
 
 [[routes]]
 path = "/api/domains"
 method = "GET"
-aggregate = "merge"
+max_parallel_upstreams = 3
+[routes.aggregation]
+strategy = "merge"
 allow_partial_results = false
 
 [[routes.middlewares]]
 name = "logger"
 path = "/tokka/middlewares/logger.so"
 override = true
-
 [routes.middlewares.config]
 enabled = false
 
 [[routes.upstreams]]
 url = "http://domain-service.local/v1/domains"
 method = "GET"
-timeout = 3000
+timeout = "3s"
 forward_query_strings = ["*"]
 forward_headers = ["X-For*"]
+[routes.upstreams.policy.circuit_breaker]
+enabled = true
+max_failures = 5
+reset_timeout = "2s"
 
 [[routes.upstreams]]
 url = "http://profile-service.local/v1/details"
 method = "GET"
-timeout = 2000
+timeout = "2s"
 forward_query_strings = ["id"]
 forward_headers = ["X-For"]
+[routes.upstreams.policy.circuit_breaker]
+enabled = true
+max_failures = 5
+reset_timeout = "2s"
 
 [[routes]]
 path = "/api/domains"
 method = "POST"
-aggregate = "array"
+[routes.aggregation]
+strategy = "array"
 allow_partial_results = false
-plugins = []
 
 [[routes.middlewares]]
 name = "compressor"
 path = "/tokka/middlewares/compressor.so"
 can_fail_on_load = false
-
 [routes.middlewares.config]
 enabled = true
 alg = "gzip"
@@ -114,7 +140,7 @@ alg = "gzip"
 [[routes.upstreams]]
 url = "http://domain-service.local/v1/domains"
 method = "POST"
-timeout = 1000
+timeout = "1s"
 
 [[routes.upstreams]]
 url = "http://profile-service.local/v1/details"
@@ -123,15 +149,14 @@ method = "GET"
 [[routes]]
 path = "/api/domains"
 method = "DELETE"
-aggregate = "array"
+[routes.aggregation]
+strategy = "array"
 allow_partial_results = false
-plugins = []
 
 [[routes.middlewares]]
 name = "compressor"
 path = "/tokka/middlewares/compressor.so"
 can_fail_on_load = false
-
 [routes.middlewares.config]
 enabled = true
 alg = "deflate"
@@ -141,14 +166,13 @@ name = "recoverer"
 path = "/tokka/middlewares/recoverer.so"
 can_fail_on_load = true
 override = true
-
 [routes.middlewares.config]
 enabled = false
 
 [[routes.upstreams]]
 url = "http://domain-service.local/v1/domains"
 method = "DELETE"
-timeout = 2000
+timeout = "2s"
 
 [[routes.upstreams]]
 url = "http://profile-service.local/v1/details"

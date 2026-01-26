@@ -3,12 +3,14 @@ package tokka
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/starwalkn/tokka/internal/circuitbreaker"
 )
 
 type httpUpstream struct {
@@ -21,7 +23,8 @@ type httpUpstream struct {
 	forwardQueryStrings []string
 	policy              UpstreamPolicy
 
-	client *http.Client
+	client         *http.Client
+	circuitBreaker *circuitbreaker.CircuitBreaker
 }
 
 func (u *httpUpstream) Name() string {
@@ -42,18 +45,47 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 
 	req, err := u.newRequest(ctx, original, originalBody)
 	if err != nil {
-		uresp.Err = err
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamInternal,
+			Err:  err,
+		}
+
 		return uresp
 	}
 
 	hresp, err := u.client.Do(req)
 	if err != nil {
-		uresp.Err = err
+		kind := UpstreamConnection
+
+		if errors.Is(err, context.DeadlineExceeded) {
+			kind = UpstreamTimeout
+		}
+
+		if errors.Is(err, context.Canceled) {
+			kind = UpstreamCanceled
+		}
+
+		uresp.Err = &UpstreamError{
+			Kind: kind,
+			Err:  err,
+		}
+
 		return uresp
 	}
 	defer hresp.Body.Close()
 
 	uresp.Status = hresp.StatusCode
+
+	if hresp.StatusCode >= http.StatusInternalServerError {
+		uresp.Err = &UpstreamError{
+			Kind:       UpstreamBadStatus,
+			StatusCode: hresp.StatusCode,
+			Err:        errors.New("upstream error"),
+		}
+
+		return uresp
+	}
+
 	uresp.Headers = hresp.Header.Clone()
 
 	var reader io.Reader = hresp.Body
@@ -63,12 +95,19 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 
 	body, err := io.ReadAll(reader)
 	if err != nil {
-		uresp.Err = err
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamReadError,
+			Err:  err,
+		}
+
 		return uresp
 	}
 
 	if u.policy.MaxResponseBodySize > 0 && int64(len(body)) > u.policy.MaxResponseBodySize {
-		uresp.Err = fmt.Errorf("response body larger than limit of %d bytes", u.policy.MaxResponseBodySize)
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamBodyTooLarge,
+		}
+
 		return uresp
 	}
 
@@ -77,29 +116,54 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 	return uresp
 }
 
-func (u *httpUpstream) callWithRetry(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse {
+func (u *httpUpstream) Call(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse {
 	resp := &UpstreamResponse{}
 
 	for attempt := 0; attempt <= retryPolicy.MaxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
-			resp.Err = ctx.Err()
+			resp.Err = &UpstreamError{
+				Kind: UpstreamCanceled,
+				Err:  ctx.Err(),
+			}
+
 			return resp
 		default:
+			if u.circuitBreaker != nil {
+				if allow := u.circuitBreaker.Allow(); !allow {
+					return &UpstreamResponse{
+						Err: &UpstreamError{
+							Kind: UpstreamCircuitOpen,
+							Err:  errors.New("upstream circuit breaker is open"),
+						},
+					}
+				}
+			}
+
 			resp = u.call(ctx, original, originalBody)
 			if resp.Err == nil && !slices.Contains(retryPolicy.RetryOnStatuses, resp.Status) {
 				break
+			}
+
+			if u.circuitBreaker != nil {
+				if resp.Err != nil && u.isBreakerFailure(resp.Err) {
+					u.circuitBreaker.OnFailure()
+				} else {
+					u.circuitBreaker.OnSuccess()
+				}
 			}
 
 			if retryPolicy.BackoffDelay > 0 {
 				select {
 				case <-time.After(retryPolicy.BackoffDelay):
 				case <-ctx.Done():
-					resp.Err = ctx.Err()
+					resp.Err = &UpstreamError{
+						Kind: UpstreamCanceled,
+						Err:  ctx.Err(),
+					}
+
 					return resp
 				}
-
-				time.Sleep(retryPolicy.BackoffDelay)
 			}
 		}
 	}
@@ -185,4 +249,21 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
 
 	// Always forward the Content-Type header.
 	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
+}
+
+func (u *httpUpstream) isBreakerFailure(uerr *UpstreamError) bool {
+	if uerr == nil || uerr.Err == nil {
+		return false
+	}
+
+	if errors.Is(uerr.Err, context.Canceled) || errors.Is(uerr.Err, context.DeadlineExceeded) {
+		return false
+	}
+
+	switch uerr.Kind {
+	case UpstreamTimeout, UpstreamConnection, UpstreamBadStatus:
+		return true
+	default:
+		return false
+	}
 }

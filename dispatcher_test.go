@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 	"time"
 
@@ -16,7 +16,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const maxParallelUpstreams = 10
+
 func TestDispatcher_Dispatch_Success(t *testing.T) {
+	t.Log(runtime.NumCPU())
+
 	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		w.Write([]byte("A"))
@@ -39,6 +43,7 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 			&httpUpstream{url: upstreamA.URL, timeout: 1000 * time.Millisecond, client: http.DefaultClient},
 			&httpUpstream{url: upstreamB.URL, timeout: 1000 * time.Millisecond, client: http.DefaultClient},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
@@ -79,6 +84,7 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 				client:              http.DefaultClient,
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test?foo=bar", nil)
@@ -112,6 +118,7 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 				client:  http.DefaultClient,
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodPost, "http://example.com/test", bytes.NewBufferString("hello"))
@@ -143,6 +150,7 @@ func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
 				client:  http.DefaultClient,
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
@@ -183,6 +191,7 @@ func TestDispatcher_Dispatch_MapStatusCodesPolicy(t *testing.T) {
 				},
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
@@ -231,6 +240,7 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 				},
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
@@ -245,7 +255,7 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 		t.Errorf("expected error, got nil")
 	}
 
-	if results[0].Err.Error() != fmt.Sprintf("response body larger than limit of %d bytes", maxResponseBodySize) {
+	if results[0].Err.Error() != "body_too_large" {
 		t.Errorf("expected error message 'response body larger than limit of %d bytes', got %v", maxResponseBodySize, results[0].Err)
 	}
 }
@@ -290,6 +300,7 @@ func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
 				},
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
@@ -304,7 +315,7 @@ func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
 		t.Errorf("expected no error, got %v", results[0].Err)
 	}
 
-	if results[1].Err == nil || results[1].Err.Error() != "empty body not allowed by upstream policy" {
+	if results[1].Err == nil || results[1].Err.Unwrap().Error() != "empty body not allowed by upstream policy" {
 		t.Errorf("expected policy violation error, got %v", results[1].Err)
 	}
 }
@@ -345,6 +356,7 @@ func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
 				},
 			},
 		},
+		MaxParallelUpstreams: maxParallelUpstreams,
 	}
 
 	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)

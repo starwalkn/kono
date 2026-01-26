@@ -36,6 +36,7 @@ func NewVictoria() Metrics {
 			FailReasonNoMatchedRoute:  metrics.NewCounter(`tokka_failed_requests_total{reason="no_matched_route"}`),
 			FailReasonBodyTooLarge:    metrics.NewCounter(`tokka_failed_requests_total{reason="body_too_large"}`),
 			FailReasonPolicyViolation: metrics.NewCounter(`tokka_failed_requests_total{reason="policy_violation"}`),
+			FailReasonUnknown:         metrics.NewCounter(`tokka_failed_requests_total{reason="unknown"}`),
 		},
 	}
 }
@@ -67,6 +68,7 @@ func (m *victoriaMetrics) DecRequestsInFlight() {
 
 func (m *victoriaMetrics) IncFailedRequestsTotal(reason FailReason) {
 	if _, ok := m.FailedRequestsTotal[reason]; !ok {
+		m.FailedRequestsTotal[FailReasonUnknown].Inc()
 		return
 	}
 
