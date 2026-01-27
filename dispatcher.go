@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
@@ -58,6 +59,8 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 		go func(i int, u Upstream, originalBody []byte) {
 			defer wg.Done()
+
+			start := time.Now()
 
 			ctx := original.Context()
 
@@ -115,6 +118,8 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 					resp.Err.Err = errors.Join(resp.Err.Err, errors.Join(errs...))
 				}
 			}
+
+			d.metrics.UpdateUpstreamLatency(route.Path, route.Method, u.Name(), time.Since(start))
 
 			results[i] = *resp
 		}(i, u, originalBody)

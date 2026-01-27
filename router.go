@@ -55,8 +55,8 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 
 	if metricsConfig.Enabled {
 		switch metricsConfig.Provider {
-		case "victoriametrics":
-			router.metrics = metric.NewVictoria()
+		case "prometheus":
+			router.metrics = metric.NewPrometheus()
 		default:
 			router.metrics = metric.NewNop()
 		}
@@ -66,11 +66,13 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 		//nolint:gocritic // for the future
 		switch fcfg.Name {
 		case "ratelimit":
-			router.rateLimiter = ratelimit.New(fcfg.Config)
+			if fcfg.Enabled {
+				router.rateLimiter = ratelimit.New(fcfg.Config)
 
-			err := router.rateLimiter.Start()
-			if err != nil {
-				log.Fatal("failed to start ratelimit feature", zap.Error(err))
+				err := router.rateLimiter.Start()
+				if err != nil {
+					log.Fatal("failed to start ratelimit feature", zap.Error(err))
+				}
 			}
 		}
 	}
@@ -111,13 +113,10 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 //
 // The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	start := time.Now()
-
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
 
 	defer r.metrics.IncRequestsTotal()
-	defer r.metrics.UpdateRequestsDuration(start)
 
 	if r.rateLimiter != nil {
 		ip := req.Header.Get("X-Forwarded-For")
@@ -142,6 +141,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		start := time.Now()
+		defer r.metrics.UpdateRequestsDuration(matchedRoute.Path, matchedRoute.Method, start)
+
 		tctx := newContext(req) // Tokka context.
 
 		requestID := req.Header.Get("X-Request-ID")

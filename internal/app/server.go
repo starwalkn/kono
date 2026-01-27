@@ -1,29 +1,24 @@
-package main
+package app
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/VictoriaMetrics/metrics"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/tokka"
 	"github.com/starwalkn/tokka/dashboard"
-	"github.com/starwalkn/tokka/internal/logger"
 )
 
-func main() {
-	cfgPath := os.Getenv("TOKKA_CONFIG")
-	if cfgPath == "" {
-		cfgPath = "./tokka.json"
-	}
+type Server struct {
+	http *http.Server
+	log  *zap.Logger
+}
 
-	cfg := tokka.LoadConfig(cfgPath)
-	log := logger.New(cfg.Debug)
-
-	if cfg.Dashboard.Enable {
+func NewServer(cfg tokka.Config, log *zap.Logger) *Server {
+	if cfg.Dashboard.Enabled {
 		dashboardServer := dashboard.NewServer(&cfg, log.Named("dashboard"))
 		go dashboardServer.Start()
 	}
@@ -35,6 +30,7 @@ func main() {
 		Features:    cfg.Features,
 		Metrics:     cfg.Server.Metrics,
 	}
+
 	mainRouter := tokka.NewRouter(routerConfigSet, log.Named("router"))
 
 	mux := http.NewServeMux()
@@ -48,20 +44,21 @@ func main() {
 
 	mux.Handle("/", mainRouter)
 
-	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  cfg.Server.Timeout,
-		WriteTimeout: cfg.Server.Timeout,
+	return &Server{
+		log: log,
+		http: &http.Server{
+			Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
+			Handler:      mux,
+			ReadTimeout:  cfg.Server.Timeout,
+			WriteTimeout: cfg.Server.Timeout,
+		},
 	}
+}
 
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal("server error", zap.Error(err))
-	}
+func (s *Server) Start() error {
+	return s.http.ListenAndServe()
+}
 
-	log.Info("server is closed")
-
-	if err := log.Sync(); err != nil {
-		log.Warn("cannot sync log", zap.Error(err))
-	}
+func (s *Server) Stop(ctx context.Context) error {
+	return s.http.Shutdown(ctx)
 }

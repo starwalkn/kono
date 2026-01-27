@@ -46,4 +46,6 @@ COPY --from=dashboard-builder /app/fonts /dashboard/static/fonts
 
 EXPOSE 7805/tcp 7806/tcp
 
-CMD ["/bin/tokka"]
+STOPSIGNAL SIGTERM
+
+CMD ["/bin/tokka", "serve"]

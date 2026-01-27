@@ -12,13 +12,14 @@
     }
   },
   "dashboard": {
-    "enable": true,
+    "enabled": true,
     "port": 7806,
     "timeout": "30s"
   },
   "features": [
     {
       "name": "ratelimit",
+      "enabled": true,
       "config": {
         "limit": 10,
         "window": 1
