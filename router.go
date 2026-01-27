@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -118,18 +120,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	defer r.metrics.IncRequestsTotal()
 
-	if r.rateLimiter != nil {
-		ip := req.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = req.RemoteAddr
-		}
-
-		if !r.rateLimiter.Allow(ip) {
-			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
-			return
-		}
-	}
-
 	matchedRoute := r.match(req)
 	if matchedRoute == nil {
 		r.log.Error("no route matched", zap.String("request_uri", req.URL.RequestURI()))
@@ -138,6 +128,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 
 		return
+	}
+
+	if r.rateLimiter != nil {
+		if !r.rateLimiter.Allow(extractClientIP(req)) {
+			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -247,7 +244,7 @@ func (r *Router) match(req *http.Request) *Route {
 	for i := range r.Routes {
 		route := &r.Routes[i]
 
-		if route.Method != "" && route.Method != req.Method {
+		if route.Method != "" && !strings.EqualFold(route.Method, req.Method) {
 			continue
 		}
 
@@ -288,4 +285,22 @@ func mustMarshal(v any) []byte {
 	}
 
 	return b
+}
+
+func extractClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return xrip
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+
+	return r.RemoteAddr
 }

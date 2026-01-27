@@ -27,11 +27,19 @@ type RateLimit struct {
 }
 
 func New(cfg map[string]any) *RateLimit {
+	window, err := time.ParseDuration(cfg["window"].(string))
+	if err != nil {
+		window = defaultWindow
+	}
+
 	return &RateLimit{
 		limit:   intFrom(cfg, "limit", defaultLimit),
-		window:  time.Duration(intFrom(cfg, "window", int(defaultWindow.Seconds()))) * time.Second,
+		window:  window,
+		mu:      sync.Mutex{},
 		buckets: make(map[string]*entry),
+
 		stopCh:  make(chan struct{}),
+		stopped: false,
 	}
 }
 
@@ -39,6 +47,7 @@ func (rl *RateLimit) Start() error {
 	go func() {
 		ticker := time.NewTicker(cleanupEvery)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ticker.C:
@@ -48,6 +57,7 @@ func (rl *RateLimit) Start() error {
 			}
 		}
 	}()
+
 	return nil
 }
 
@@ -61,6 +71,7 @@ func (rl *RateLimit) Stop() error {
 
 	close(rl.stopCh)
 	rl.stopped = true
+
 	return nil
 }
 
@@ -69,17 +80,22 @@ func (rl *RateLimit) Allow(key string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	b, ok := rl.buckets[key]
-	if !ok || now.After(b.resetAt) {
+
+	ent, ok := rl.buckets[key]
+	if !ok || now.After(ent.resetAt) {
+		// New window
+		reset := now.Add(rl.window)
+
 		rl.buckets[key] = &entry{
 			count:   1,
-			resetAt: now.Add(rl.window),
+			resetAt: reset,
 		}
+
 		return true
 	}
 
-	if b.count < rl.limit {
-		b.count++
+	if ent.count < rl.limit {
+		ent.count++
 		return true
 	}
 
@@ -91,8 +107,9 @@ func (rl *RateLimit) cleanup() {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	for key, b := range rl.buckets {
-		if now.After(b.resetAt) {
+
+	for key, ent := range rl.buckets {
+		if now.After(ent.resetAt) {
 			delete(rl.buckets, key)
 		}
 	}
@@ -107,5 +124,6 @@ func intFrom(cfg map[string]any, key string, def int) int {
 			return val
 		}
 	}
+
 	return def
 }
