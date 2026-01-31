@@ -97,23 +97,23 @@ type UpstreamCircuitBreakerConfig struct {
 }
 
 type PluginConfig struct {
-	Name   string         `json:"name" yaml:"name" toml:"name"`
-	Path   string         `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
-	Config map[string]any `json:"config" yaml:"config" toml:"config"`
+	Name   string                 `json:"name" yaml:"name" toml:"name"`
+	Path   string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
+	Config map[string]interface{} `json:"config" yaml:"config" toml:"config"`
 }
 
 type MiddlewareConfig struct {
-	Name          string         `json:"name" yaml:"name" toml:"name"`
-	Path          string         `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
-	Config        map[string]any `json:"config" yaml:"config" toml:"config"`
-	CanFailOnLoad bool           `json:"can_fail_on_load" yaml:"can_fail_on_load" toml:"can_fail_on_load"`
-	Override      bool           `json:"override" yaml:"override" toml:"override"`
+	Name          string                 `json:"name" yaml:"name" toml:"name"`
+	Path          string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
+	Config        map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+	CanFailOnLoad bool                   `json:"can_fail_on_load" yaml:"can_fail_on_load" toml:"can_fail_on_load"`
+	Override      bool                   `json:"override" yaml:"override" toml:"override"`
 }
 
 type FeatureConfig struct {
-	Enabled bool           `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Name    string         `json:"name" yaml:"name" toml:"name"`
-	Config  map[string]any `json:"config" yaml:"config" toml:"config"`
+	Enabled bool                   `json:"enabled" yaml:"enabled" toml:"enabled"`
+	Name    string                 `json:"name" yaml:"name" toml:"name"`
+	Config  map[string]interface{} `json:"config" yaml:"config" toml:"config"`
 }
 
 func LoadConfig(path string) (Config, error) {

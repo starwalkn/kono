@@ -48,7 +48,7 @@ func (m *Middleware) Name() string {
 	return "auth"
 }
 
-func (m *Middleware) Init(config map[string]any) error {
+func (m *Middleware) Init(config map[string]interface{}) error {
 	issuer, ok := config["issuer"].(string)
 	if !ok {
 		return errors.New("missing issuer")

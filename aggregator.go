@@ -74,12 +74,12 @@ func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) Aggregated
 }
 
 func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
-	merged := make(map[string]any)
+	merged := make(map[string]interface{})
 
 	var aggregationErrors []JSONError
 
 	for _, resp := range responses {
-		var obj map[string]any
+		var obj map[string]interface{}
 
 		// Handle upstream error.
 		if resp.Err != nil {

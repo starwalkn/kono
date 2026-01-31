@@ -26,7 +26,7 @@ type RateLimit struct {
 	stopped bool
 }
 
-func New(cfg map[string]any) *RateLimit {
+func New(cfg map[string]interface{}) *RateLimit {
 	window, err := time.ParseDuration(cfg["window"].(string))
 	if err != nil {
 		window = defaultWindow
@@ -115,7 +115,7 @@ func (rl *RateLimit) cleanup() {
 	}
 }
 
-func intFrom(cfg map[string]any, key string, def int) int {
+func intFrom(cfg map[string]interface{}, key string, def int) int {
 	if v, ok := cfg[key]; ok {
 		switch val := v.(type) {
 		case float64:

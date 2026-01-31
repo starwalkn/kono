@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -14,14 +14,14 @@ var validateCmd = &cobra.Command{
 	Short:        "Validates configuration file",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		err := runValidate()
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			return
 		}
 
-		fmt.Println("configuration file is valid, you can start the server")
+		log.Println("configuration file is valid, you can start the server")
 	},
 }
 

@@ -26,7 +26,7 @@ func (r *rsaResolver) KeyFunc(token *jwt.Token) (any, error) {
 	return r.RSAPublic, nil
 }
 
-func parseRSAPublicKey(config map[string]any, key string) (*rsa.PublicKey, error) {
+func parseRSAPublicKey(config map[string]interface{}, key string) (*rsa.PublicKey, error) {
 	raw, ok := config[key]
 	if !ok {
 		return nil, nil //nolint:nilnil // its ok here

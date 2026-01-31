@@ -35,7 +35,7 @@ func initGlobalMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) (map[string
 	globalMiddlewares := make([]Middleware, 0, len(cfgs))
 
 	for i, cfg := range cfgs {
-		soMiddleware := loadMiddlewareFromSO(cfg.Path, cfg.Config, log)
+		soMiddleware := loadMiddleware(cfg.Path, cfg.Config, log)
 		if soMiddleware == nil {
 			log.Error(
 				"cannot load middleware from .so",
@@ -61,14 +61,14 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 
 	for _, cfg := range cfgs {
 		cfn := func(plugin Plugin) bool {
-			return plugin.Name() == cfg.Name
+			return plugin.Info().Name == cfg.Name
 		}
 
 		if slices.ContainsFunc(plugins, cfn) {
 			continue
 		}
 
-		soPlugin := loadPluginFromSO(cfg.Path, cfg.Config, log)
+		soPlugin := loadPlugin(cfg.Path, cfg.Config, log)
 		if soPlugin == nil {
 			log.Error(
 				"cannot load plugin from .so",
@@ -80,7 +80,7 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 
 		log.Info(
 			"plugin initialized",
-			zap.String("name", soPlugin.Name()),
+			zap.Any("name", soPlugin.Info()),
 		)
 
 		plugins = append(plugins, soPlugin)
@@ -150,7 +150,7 @@ func initRoute(cfg RouteConfig, globalMiddlewares []Middleware, globalMiddleware
 	)
 
 	for _, mcfg := range cfg.Middlewares {
-		soMiddleware := loadMiddlewareFromSO(mcfg.Path, mcfg.Config, log)
+		soMiddleware := loadMiddleware(mcfg.Path, mcfg.Config, log)
 		if soMiddleware == nil {
 			log.Error("cannot load middleware from .so", zap.String("name", mcfg.Name))
 

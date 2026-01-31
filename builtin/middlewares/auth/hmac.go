@@ -24,7 +24,7 @@ func (r *hmacResolver) KeyFunc(token *jwt.Token) (any, error) {
 	return r.HMACSecret, nil
 }
 
-func parseHMACSecret(config map[string]any, key string) ([]byte, error) {
+func parseHMACSecret(config map[string]interface{}, key string) ([]byte, error) {
 	raw, ok := config[key]
 	if !ok {
 		return nil, nil

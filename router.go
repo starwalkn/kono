@@ -141,25 +141,31 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
 		defer r.metrics.UpdateRequestsDuration(matchedRoute.Path, matchedRoute.Method, start)
 
-		tctx := newContext(req) // Tokka context.
+		// Tokka internal context
+		tctx := newContext(req)
 
 		requestID := req.Header.Get("X-Request-ID")
 
-		// Request-phase plugins.
+		// Request-phase plugins
 		for _, p := range matchedRoute.Plugins {
 			if p.Type() != PluginTypeRequest {
 				continue
 			}
 
-			r.log.Debug("executing request plugin", zap.String("name", p.Name()))
+			r.log.Debug("executing request plugin", zap.String("name", p.Info().Name))
 
-			p.Execute(tctx)
+			if err := p.Execute(tctx); err != nil {
+				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
+				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+
+				return
+			}
 		}
 
-		// Upstream dispatch.
+		// Upstream dispatch
 		responses := r.dispatcher.dispatch(matchedRoute, req)
 		if responses == nil {
-			// Currently, responses can only be nil if the body size limit is exceeded or body read fails.
+			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
 			WriteError(w, ErrorCodePayloadTooLarge, "request body too large", requestID, http.StatusRequestEntityTooLarge)
 
@@ -168,7 +174,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		r.log.Debug("dispatched responses", zap.Any("responses", responses))
 
-		// Aggregate upstream responses.
+		// Aggregate upstream responses
 		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
 		attachRequestID(aggregated.Errors, requestID)
 
@@ -207,7 +213,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"Content-Type": []string{"application/json; charset=utf-8"},
 		}
 
-		// Response-phase plugins.
 		resp := &http.Response{
 			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
 			StatusCode: status,
@@ -215,15 +220,23 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			Header:     headers,
 		}
 
+		// Sets the response to the internal context for plugins
 		tctx.SetResponse(resp)
+
+		// Response-phase plugins
 		for _, p := range matchedRoute.Plugins {
 			if p.Type() != PluginTypeResponse {
 				continue
 			}
 
-			r.log.Debug("executing response plugin", zap.String("name", p.Name()))
+			r.log.Debug("executing response plugin", zap.String("name", p.Info().Name))
 
-			p.Execute(tctx)
+			if err := p.Execute(tctx); err != nil {
+				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
+				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+
+				return
+			}
 		}
 
 		r.metrics.IncResponsesTotal(tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
