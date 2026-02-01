@@ -42,6 +42,15 @@ type ServerConfig struct {
 type MetricsConfig struct {
 	Enabled  bool   `json:"enabled" yaml:"enabled" toml:"enabled"`
 	Provider string `json:"provider" yaml:"provider" toml:"provider"`
+
+	VictoriaMetrics VictoriaMetricsConfig `json:"victoria_metrics" yaml:"victoria_metrics" toml:"victoria_metrics"`
+}
+
+type VictoriaMetricsConfig struct {
+	Host     string        `json:"host" yaml:"host" toml:"host"`
+	Port     int           `json:"port" yaml:"port" toml:"port"`
+	Path     string        `json:"path" yaml:"path" toml:"path"`
+	Interval time.Duration `json:"interval" yaml:"interval" toml:"interval"`
 }
 
 type DashboardConfig struct {
@@ -66,31 +75,31 @@ type AggregationConfig struct {
 }
 
 type UpstreamConfig struct {
-	URL                 string               `json:"url" yaml:"url" toml:"url" validate:"required,url"`
-	Method              string               `json:"method" yaml:"method" toml:"method" validate:"required"`
-	Timeout             time.Duration        `json:"timeout" yaml:"timeout" toml:"timeout"`
-	ForwardHeaders      []string             `json:"forward_headers" yaml:"forward_headers" toml:"forward_headers"`
-	ForwardQueryStrings []string             `json:"forward_query_strings" yaml:"forward_query_strings" toml:"forward_query_strings"`
-	Policy              UpstreamPolicyConfig `json:"policy" yaml:"policy" toml:"policy"`
+	Hosts               []string      `json:"hosts" yaml:"hosts" toml:"hosts" validate:"required,hosts"`
+	Method              string        `json:"method" yaml:"method" toml:"method" validate:"required"`
+	Timeout             time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
+	ForwardHeaders      []string      `json:"forward_headers" yaml:"forward_headers" toml:"forward_headers"`
+	ForwardQueryStrings []string      `json:"forward_query_strings" yaml:"forward_query_strings" toml:"forward_query_strings"`
+	Policy              PolicyConfig  `json:"policy" yaml:"policy" toml:"policy"`
 }
 
-type UpstreamPolicyConfig struct {
+type PolicyConfig struct {
 	AllowedStatuses     []int       `json:"allowed_status_codes" yaml:"allowed_status_codes" toml:"allowed_status_codes"`
 	RequireBody         bool        `json:"allow_empty_body" yaml:"allow_empty_body" toml:"allow_empty_body"`
 	MapStatusCodes      map[int]int `json:"map_status_codes" yaml:"map_status_codes" toml:"map_status_codes"`
 	MaxResponseBodySize int64       `json:"max_response_body_size" yaml:"max_response_body_size" toml:"max_response_body_size"`
 
-	RetryConfig          UpstreamRetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
-	CircuitBreakerConfig UpstreamCircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
+	RetryConfig          RetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
+	CircuitBreakerConfig CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
 }
 
-type UpstreamRetryConfig struct {
+type RetryConfig struct {
 	MaxRetries      int           `json:"max_retries" yaml:"max_retries" toml:"max_retries"`
 	RetryOnStatuses []int         `json:"retry_on_statuses" yaml:"retry_on_statuses" toml:"retry_on_statuses"`
 	BackoffDelay    time.Duration `json:"backoff_delay" yaml:"backoff_delay" toml:"backoff_delay"`
 }
 
-type UpstreamCircuitBreakerConfig struct {
+type CircuitBreakerConfig struct {
 	Enabled      bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
 	MaxFailures  int           `json:"max_failures" yaml:"max_failures" toml:"max_failures"`
 	ResetTimeout time.Duration `json:"reset_timeout" yaml:"reset_timeout" toml:"reset_timeout"`
@@ -212,7 +221,7 @@ func humanMessage(fe validator.FieldError) string {
 	case "oneof":
 		return fmt.Sprintf("must be one of [%s]", fe.Param())
 
-	case "url":
+	case "hosts":
 		return "must be a valid URL"
 
 	default:

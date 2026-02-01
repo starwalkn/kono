@@ -11,7 +11,7 @@ func NewNop() Metrics {
 }
 func (m *nopMetrics) IncRequestsTotal()                                     {}
 func (m *nopMetrics) UpdateRequestsDuration(_, _ string, _ time.Time)       {}
-func (m *nopMetrics) IncResponsesTotal(_ int)                               {}
+func (m *nopMetrics) IncResponsesTotal(_ string, _ int)                     {}
 func (m *nopMetrics) IncRequestsInFlight()                                  {}
 func (m *nopMetrics) DecRequestsInFlight()                                  {}
 func (m *nopMetrics) IncFailedRequestsTotal(_ FailReason)                   {}

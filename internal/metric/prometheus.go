@@ -22,6 +22,13 @@ func NewPrometheus() Metrics {
 			Name: "tokka_requests_total",
 			Help: "Total number of API requests",
 		}),
+		FailedRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "tokka_failed_requests_total",
+				Help: "Total number of failed requests by reason",
+			},
+			[]string{"reason"},
+		),
 		RequestsDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "tokka_requests_duration_seconds",
@@ -35,19 +42,12 @@ func NewPrometheus() Metrics {
 				Name: "tokka_responses_total",
 				Help: "Total number of responses by status code",
 			},
-			[]string{"status"},
+			[]string{"route", "status"},
 		),
 		RequestsInFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "tokka_requests_in_flight",
 			Help: "Current number of in-flight requests",
 		}),
-		FailedRequestsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "tokka_failed_requests_total",
-				Help: "Total number of failed requests by reason",
-			},
-			[]string{"reason"},
-		),
 		UpstreamLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name: "tokka_upstream_latency",
@@ -63,6 +63,7 @@ func NewPrometheus() Metrics {
 		m.ResponsesTotal,
 		m.RequestsInFlight,
 		m.FailedRequestsTotal,
+		m.UpstreamLatency,
 	)
 
 	return m
@@ -76,8 +77,8 @@ func (m *prometheusMetrics) UpdateRequestsDuration(route, method string, start t
 	m.RequestsDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
 }
 
-func (m *prometheusMetrics) IncResponsesTotal(status int) {
-	m.ResponsesTotal.WithLabelValues(strconv.Itoa(status)).Inc()
+func (m *prometheusMetrics) IncResponsesTotal(route string, status int) {
+	m.ResponsesTotal.WithLabelValues(route, strconv.Itoa(status)).Inc()
 }
 
 func (m *prometheusMetrics) IncRequestsInFlight() {

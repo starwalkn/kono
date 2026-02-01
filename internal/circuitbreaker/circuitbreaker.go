@@ -19,15 +19,15 @@ type CircuitBreaker struct {
 	failures      int
 	lastFailureAt time.Time
 
-	maxFailures   int
+	threshold     int
 	resetTimeout  time.Duration
 	halfOpenTrial bool
 }
 
-func New(maxFailures int, resetTimeout time.Duration) *CircuitBreaker {
+func New(threshold int, resetTimeout time.Duration) *CircuitBreaker {
 	return &CircuitBreaker{
 		state:        Closed,
-		maxFailures:  maxFailures,
+		threshold:    threshold,
 		resetTimeout: resetTimeout,
 	}
 }
@@ -68,11 +68,11 @@ func (b *CircuitBreaker) OnFailure() {
 	switch b.state {
 	case HalfOpen:
 		b.state = Open
-		b.failures = b.maxFailures
+		b.failures = b.threshold
 	case Closed:
 		b.failures++
 
-		if b.failures >= b.maxFailures {
+		if b.failures >= b.threshold {
 			b.state = Open
 		}
 	}

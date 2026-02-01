@@ -3,34 +3,12 @@ package tokka
 import (
 	"context"
 	"net/http"
-	"time"
 )
 
 type Upstream interface {
 	Name() string
-	Policy() UpstreamPolicy
-	Call(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse
-}
-
-type UpstreamPolicy struct {
-	AllowedStatuses     []int
-	RequireBody         bool
-	MapStatusCodes      map[int]int
-	MaxResponseBodySize int64
-	RetryPolicy         UpstreamRetryPolicy
-	CircuitBreaker      UpstreamCircuitBreaker
-}
-
-type UpstreamRetryPolicy struct {
-	MaxRetries      int
-	RetryOnStatuses []int
-	BackoffDelay    time.Duration
-}
-
-type UpstreamCircuitBreaker struct {
-	Enabled      bool
-	MaxFailures  int
-	ResetTimeout time.Duration
+	Policy() Policy
+	Call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse
 }
 
 type UpstreamResponse struct {
@@ -41,12 +19,11 @@ type UpstreamResponse struct {
 }
 
 type UpstreamError struct {
-	Kind       UpstreamErrorKind // Error kind for aggregator.
-	StatusCode int               // Only for bad statuses.
-	Err        error             // Original error. Not for client!
+	Kind UpstreamErrorKind // Error kind for aggregator.
+	Err  error             // Original error. Not for client!
 }
 
-// Error returns the upstream error kind. Error kind is a string, not error interface!
+// Error returns the upstream error kind. Error kind is a custom string type, not error interface!
 func (ue *UpstreamError) Error() string {
 	return string(ue.Kind)
 }

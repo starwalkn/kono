@@ -13,110 +13,34 @@ import (
 	"github.com/starwalkn/tokka/internal/circuitbreaker"
 )
 
+// httpUpstream is an implementation of Upstream interface.
 type httpUpstream struct {
-	name                string
-	url                 string
+	id                  string // UUID for internal usage.
+	name                string // For logs.
+	hosts               []string
 	method              string
 	timeout             time.Duration
 	forwardHeaders      []string
 	forwardQueryStrings []string
-	policy              UpstreamPolicy
+	policy              Policy
 
-	client         *http.Client
 	circuitBreaker *circuitbreaker.CircuitBreaker
+
+	client *http.Client
 }
 
 func (u *httpUpstream) Name() string {
 	return u.name
 }
 
-func (u *httpUpstream) Policy() UpstreamPolicy {
+func (u *httpUpstream) Policy() Policy {
 	return u.policy
 }
 
-func (u *httpUpstream) call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse {
-	uresp := &UpstreamResponse{
-		Headers: make(http.Header, 0),
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, u.timeout)
-	defer cancel()
-
-	req, err := u.newRequest(ctx, original, originalBody)
-	if err != nil {
-		uresp.Err = &UpstreamError{
-			Kind: UpstreamInternal,
-			Err:  err,
-		}
-
-		return uresp
-	}
-
-	hresp, err := u.client.Do(req)
-	if err != nil {
-		kind := UpstreamConnection
-
-		if errors.Is(err, context.DeadlineExceeded) {
-			kind = UpstreamTimeout
-		}
-
-		if errors.Is(err, context.Canceled) {
-			kind = UpstreamCanceled
-		}
-
-		uresp.Err = &UpstreamError{
-			Kind: kind,
-			Err:  err,
-		}
-
-		return uresp
-	}
-	defer hresp.Body.Close()
-
-	uresp.Status = hresp.StatusCode
-
-	if hresp.StatusCode >= http.StatusInternalServerError {
-		uresp.Err = &UpstreamError{
-			Kind:       UpstreamBadStatus,
-			StatusCode: hresp.StatusCode,
-			Err:        errors.New("upstream error"),
-		}
-
-		return uresp
-	}
-
-	uresp.Headers = hresp.Header.Clone()
-
-	var reader io.Reader = hresp.Body
-	if u.policy.MaxResponseBodySize > 0 {
-		reader = io.LimitReader(hresp.Body, u.policy.MaxResponseBodySize+1)
-	}
-
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		uresp.Err = &UpstreamError{
-			Kind: UpstreamReadError,
-			Err:  err,
-		}
-
-		return uresp
-	}
-
-	if u.policy.MaxResponseBodySize > 0 && int64(len(body)) > u.policy.MaxResponseBodySize {
-		uresp.Err = &UpstreamError{
-			Kind: UpstreamBodyTooLarge,
-		}
-
-		return uresp
-	}
-
-	uresp.Body = body
-
-	return uresp
-}
-
-func (u *httpUpstream) Call(ctx context.Context, original *http.Request, originalBody []byte, retryPolicy UpstreamRetryPolicy) *UpstreamResponse {
+func (u *httpUpstream) Call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse {
 	resp := &UpstreamResponse{}
+
+	retryPolicy := u.policy.RetryPolicy
 
 	for attempt := 0; attempt <= retryPolicy.MaxRetries; attempt++ {
 		select {
@@ -170,6 +94,86 @@ func (u *httpUpstream) Call(ctx context.Context, original *http.Request, origina
 	return resp
 }
 
+func (u *httpUpstream) call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse {
+	uresp := &UpstreamResponse{
+		Headers: make(http.Header, 0),
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, u.timeout)
+	defer cancel()
+
+	req, err := u.newRequest(ctx, original, originalBody)
+	if err != nil {
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamInternal,
+			Err:  err,
+		}
+
+		return uresp
+	}
+
+	hresp, err := u.client.Do(req)
+	if err != nil {
+		kind := UpstreamConnection
+
+		if errors.Is(err, context.DeadlineExceeded) {
+			kind = UpstreamTimeout
+		}
+
+		if errors.Is(err, context.Canceled) {
+			kind = UpstreamCanceled
+		}
+
+		uresp.Err = &UpstreamError{
+			Kind: kind,
+			Err:  err,
+		}
+
+		return uresp
+	}
+	defer hresp.Body.Close()
+
+	uresp.Status = hresp.StatusCode
+
+	if hresp.StatusCode >= http.StatusInternalServerError {
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamBadStatus,
+			Err:  errors.New("upstream error"),
+		}
+
+		return uresp
+	}
+
+	uresp.Headers = hresp.Header.Clone()
+
+	var reader io.Reader = hresp.Body
+	if u.policy.MaxResponseBodySize > 0 {
+		reader = io.LimitReader(hresp.Body, u.policy.MaxResponseBodySize+1)
+	}
+
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamReadError,
+			Err:  err,
+		}
+
+		return uresp
+	}
+
+	if u.policy.MaxResponseBodySize > 0 && int64(len(body)) > u.policy.MaxResponseBodySize {
+		uresp.Err = &UpstreamError{
+			Kind: UpstreamBodyTooLarge,
+		}
+
+		return uresp
+	}
+
+	uresp.Body = body
+
+	return uresp
+}
+
 func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte) (*http.Request, error) {
 	method := u.method
 	if method == "" {
@@ -182,7 +186,8 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 		originalBody = nil
 	}
 
-	target, err := http.NewRequestWithContext(ctx, method, u.url, bytes.NewReader(originalBody))
+	// TODO: Implement round-robin host selection
+	target, err := http.NewRequestWithContext(ctx, method, u.hosts[0], bytes.NewReader(originalBody))
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +218,7 @@ func (u *httpUpstream) resolveQueryStrings(target, original *http.Request) {
 }
 
 func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
-	// Set forwarding headers.
+	// Set forwarding headers
 	for _, fw := range u.forwardHeaders {
 		if fw == "*" {
 			target.Header = original.Header.Clone()
@@ -239,7 +244,7 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
 		}
 	}
 
-	// Always forward these headers.
+	// Always forward these headers
 	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
 	target.Header.Set("Host", target.Host)
 	target.Header.Add("X-Forwarded-For", original.Host)

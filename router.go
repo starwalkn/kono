@@ -27,16 +27,6 @@ type Router struct {
 	rateLimiter *ratelimit.RateLimit
 }
 
-type Route struct {
-	Path                 string
-	Method               string
-	Upstreams            []Upstream
-	Aggregation          AggregationConfig
-	MaxParallelUpstreams int64
-	Plugins              []Plugin
-	Middlewares          []Middleware
-}
-
 type RouterConfigSet struct {
 	Version     string
 	Routes      []RouteConfig
@@ -172,6 +162,20 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		headers := http.Header{
+			"X-Request-ID": []string{requestID},
+			// TODO: Think about several encoding options
+			"Content-Type": []string{"application/json; charset=utf-8"},
+		}
+
+		// Sets backends response headers
+		for _, resp := range responses {
+			// TODO: Consider a blacklist of returning headers
+			for k, v := range resp.Headers {
+				headers[k] = v
+			}
+		}
+
 		r.log.Debug("dispatched responses", zap.Any("responses", responses))
 
 		// Aggregate upstream responses
@@ -208,11 +212,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			})
 		}
 
-		headers := http.Header{
-			"X-Request-ID": []string{requestID},
-			"Content-Type": []string{"application/json; charset=utf-8"},
-		}
-
 		resp := &http.Response{
 			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
 			StatusCode: status,
@@ -239,7 +238,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		r.metrics.IncResponsesTotal(tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
+		r.metrics.IncResponsesTotal(matchedRoute.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
 
 		// Write final output.
 		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse

@@ -80,17 +80,13 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 			upstreamPolicy := u.Policy()
 
-			resp := u.Call(ctx, original, originalBody, upstreamPolicy.RetryPolicy)
+			resp := u.Call(ctx, original, originalBody)
 			if resp.Err != nil {
 				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
 				d.log.Error("upstream request failed",
 					zap.String("name", u.Name()),
 					zap.Error(resp.Err.Unwrap()),
 				)
-			}
-
-			if resp.Status != 0 {
-				d.metrics.IncResponsesTotal(resp.Status)
 			}
 
 			var errs []error

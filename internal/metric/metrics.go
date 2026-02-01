@@ -16,7 +16,7 @@ const (
 type Metrics interface {
 	IncRequestsTotal()
 	UpdateRequestsDuration(route, method string, start time.Time)
-	IncResponsesTotal(int)
+	IncResponsesTotal(route string, status int)
 	IncRequestsInFlight()
 	DecRequestsInFlight()
 	IncFailedRequestsTotal(FailReason)

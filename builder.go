@@ -1,11 +1,12 @@
 package tokka
 
 import (
-	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/tokka/internal/circuitbreaker"
@@ -100,18 +101,19 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 		ForceAttemptHTTP2:   true,
 	}
 
+	// Build upstream policy
 	for _, cfg := range cfgs {
-		policy := UpstreamPolicy{
+		policy := Policy{
 			AllowedStatuses:     cfg.Policy.AllowedStatuses,
 			RequireBody:         cfg.Policy.RequireBody,
 			MapStatusCodes:      cfg.Policy.MapStatusCodes,
 			MaxResponseBodySize: cfg.Policy.MaxResponseBodySize,
-			RetryPolicy: UpstreamRetryPolicy{
+			RetryPolicy: RetryPolicy{
 				MaxRetries:      cfg.Policy.RetryConfig.MaxRetries,
 				RetryOnStatuses: cfg.Policy.RetryConfig.RetryOnStatuses,
 				BackoffDelay:    cfg.Policy.RetryConfig.BackoffDelay,
 			},
-			CircuitBreaker: UpstreamCircuitBreaker{
+			CircuitBreaker: CircuitBreakerPolicy{
 				Enabled:      cfg.Policy.CircuitBreakerConfig.Enabled,
 				MaxFailures:  cfg.Policy.CircuitBreakerConfig.MaxFailures,
 				ResetTimeout: cfg.Policy.CircuitBreakerConfig.ResetTimeout,
@@ -124,8 +126,9 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 		}
 
 		upstream := &httpUpstream{
-			name:                fmt.Sprintf("%s_%s", cfg.Method, cfg.URL),
-			url:                 cfg.URL,
+			id:                  uuid.NewString(),
+			name:                makeUpstreamName(cfg.Method, cfg.Hosts),
+			hosts:               cfg.Hosts,
 			method:              cfg.Method,
 			timeout:             cfg.Timeout,
 			forwardHeaders:      cfg.ForwardHeaders,
@@ -141,6 +144,23 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 	}
 
 	return upstreams
+}
+
+func makeUpstreamName(method string, hosts []string) string {
+	sb := strings.Builder{}
+
+	sb.WriteString(strings.ToUpper(method))
+	sb.WriteString("_")
+
+	for i, host := range hosts {
+		sb.WriteString(host)
+
+		if i != len(hosts)-1 {
+			sb.WriteString("_")
+		}
+	}
+
+	return sb.String()
 }
 
 func initRoute(cfg RouteConfig, globalMiddlewares []Middleware, globalMiddlewareIndices map[string]int, log *zap.Logger) Route {

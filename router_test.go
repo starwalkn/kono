@@ -131,9 +131,8 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 			results: []UpstreamResponse{
 				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
 				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind:       UpstreamTimeout,
-					StatusCode: http.StatusInternalServerError,
-					Err:        errors.New("upstream timeout"),
+					Kind: UpstreamTimeout,
+					Err:  errors.New("upstream timeout"),
 				}},
 			},
 		},
@@ -196,9 +195,8 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 			results: []UpstreamResponse{
 				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
 				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind:       UpstreamTimeout,
-					StatusCode: http.StatusInternalServerError,
-					Err:        errors.New("upstream timeout"),
+					Kind: UpstreamTimeout,
+					Err:  errors.New("upstream timeout"),
 				}},
 			},
 		},
