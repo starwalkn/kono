@@ -27,6 +27,6 @@ func init() {
 		&cfgPath,
 		"config",
 		"",
-		"Path to configuration file (env TOKKA_CONFIG)",
+		"Path to configuration file (env KONO_CONFIG)",
 	)
 }

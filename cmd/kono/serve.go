@@ -32,7 +32,7 @@ func init() {
 
 func runServe() error {
 	if cfgPath == "" {
-		cfgPath = os.Getenv("TOKKA_CONFIG")
+		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
 		cfgPath = "./kono.json"
