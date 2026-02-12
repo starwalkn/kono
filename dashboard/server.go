@@ -5,19 +5,18 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/tokka"
+	"github.com/xff16/kono"
 )
 
 type Server struct {
-	cfg *tokka.GatewayConfig
+	cfg *kono.Config
 	log *zap.Logger
 }
 
-func NewServer(cfg *tokka.GatewayConfig, log *zap.Logger) *Server {
+func NewServer(cfg *kono.Config, log *zap.Logger) *Server {
 	return &Server{
 		cfg: cfg,
 		log: log,
@@ -43,8 +42,8 @@ func (s *Server) Start() {
 	server := http.Server{
 		Addr:         addr,
 		Handler:      mux,
-		ReadTimeout:  time.Duration(s.cfg.Dashboard.Timeout) * time.Second,
-		WriteTimeout: time.Duration(s.cfg.Dashboard.Timeout) * time.Second,
+		ReadTimeout:  s.cfg.Dashboard.Timeout,
+		WriteTimeout: s.cfg.Dashboard.Timeout,
 	}
 
 	s.log.Info("dashboard server started", zap.String("addr", addr))

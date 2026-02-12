@@ -1,10 +1,11 @@
-package tokka
+package kono
 
 import (
 	"encoding/json"
 	"net/http"
 )
 
+// JSONResponse is an output structure that wraps the final response from the gateway to the client.
 type JSONResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 	Errors []JSONError     `json:"errors,omitempty"`

@@ -1,4 +1,4 @@
-package tokka
+package kono
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/starwalkn/tokka/internal/metric"
+	"github.com/xff16/kono/internal/metric"
 
 	"go.uber.org/zap"
 )
@@ -40,8 +40,8 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 
 	route := &Route{
 		Upstreams: []Upstream{
-			&httpUpstream{url: upstreamA.URL, timeout: 1000 * time.Millisecond, client: http.DefaultClient},
-			&httpUpstream{url: upstreamB.URL, timeout: 1000 * time.Millisecond, client: http.DefaultClient},
+			&httpUpstream{hosts: []string{upstreamA.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
+			&httpUpstream{hosts: []string{upstreamB.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
 		},
 		MaxParallelUpstreams: maxParallelUpstreams,
 	}
@@ -77,10 +77,11 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:                 upstreamA.URL,
+				hosts:               []string{upstreamA.URL},
 				forwardQueryStrings: []string{"foo"},
 				forwardHeaders:      []string{"X-Test"},
 				timeout:             500 * time.Millisecond,
+				log:                 zap.NewNop(),
 				client:              http.DefaultClient,
 			},
 		},
@@ -112,9 +113,10 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:     upstreamA.URL,
+				hosts:   []string{upstreamA.URL},
 				method:  http.MethodPost,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
 			},
 		},
@@ -144,9 +146,10 @@ func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:     upstreamA.URL,
+				hosts:   []string{upstreamA.URL},
 				method:  http.MethodGet,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
 			},
 		},
@@ -180,11 +183,12 @@ func TestDispatcher_Dispatch_MapStatusCodesPolicy(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:     upstreamA.URL,
+				hosts:   []string{upstreamA.URL},
 				method:  http.MethodGet,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
-				policy: UpstreamPolicy{
+				policy: Policy{
 					MapStatusCodes: map[int]int{
 						404: 502, // NotFound to InternalServerError
 					},
@@ -231,11 +235,12 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:     upstreamA.URL,
+				hosts:   []string{upstreamA.URL},
 				method:  http.MethodGet,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
-				policy: UpstreamPolicy{
+				policy: Policy{
 					MaxResponseBodySize: maxResponseBodySize,
 				},
 			},
@@ -255,7 +260,7 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 		t.Errorf("expected error, got nil")
 	}
 
-	if results[0].Err.Error() != "body_too_large" {
+	if results[0].Err.Error() != string(UpstreamBodyTooLarge) {
 		t.Errorf("expected error message 'response body larger than limit of %d bytes', got %v", maxResponseBodySize, results[0].Err)
 	}
 }
@@ -282,20 +287,22 @@ func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:     upstreamA.URL,
+				hosts:   []string{upstreamA.URL},
 				method:  http.MethodGet,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
-				policy: UpstreamPolicy{
+				policy: Policy{
 					RequireBody: true,
 				},
 			},
 			&httpUpstream{
-				url:     upstreamB.URL,
+				hosts:   []string{upstreamB.URL},
 				method:  http.MethodGet,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
-				policy: UpstreamPolicy{
+				policy: Policy{
 					RequireBody: true,
 				},
 			},
@@ -343,12 +350,13 @@ func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
 	route := &Route{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				url:     upstreamA.URL,
+				hosts:   []string{upstreamA.URL},
 				method:  http.MethodGet,
 				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
 				client:  http.DefaultClient,
-				policy: UpstreamPolicy{
-					RetryPolicy: UpstreamRetryPolicy{
+				policy: Policy{
+					RetryPolicy: RetryPolicy{
 						MaxRetries:      3,
 						RetryOnStatuses: []int{http.StatusInternalServerError},
 						BackoffDelay:    10 * time.Millisecond,

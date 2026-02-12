@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/tokka"
-	"github.com/starwalkn/tokka/internal/logger"
+	"github.com/xff16/kono"
+	"github.com/xff16/kono/internal/logger"
 )
 
 type Middleware struct {
@@ -18,7 +18,7 @@ type Middleware struct {
 	log     *zap.Logger
 }
 
-func NewMiddleware() tokka.Middleware {
+func NewMiddleware() kono.Middleware {
 	return &Middleware{}
 }
 
@@ -26,7 +26,7 @@ func (m *Middleware) Name() string {
 	return "logger"
 }
 
-func (m *Middleware) Init(cfg map[string]any) error {
+func (m *Middleware) Init(cfg map[string]interface{}) error {
 	if val, ok := cfg["enabled"].(bool); ok {
 		m.enabled = val
 	} else {

@@ -12,7 +12,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/starwalkn/tokka"
+	"github.com/xff16/kono"
 )
 
 type ctxKeyClaims struct{}
@@ -40,7 +40,7 @@ type JWTConfig struct {
 
 const defaultLeeway = 5 * time.Second
 
-func NewMiddleware() tokka.Middleware {
+func NewMiddleware() kono.Middleware {
 	return &Middleware{}
 }
 
@@ -48,7 +48,7 @@ func (m *Middleware) Name() string {
 	return "auth"
 }
 
-func (m *Middleware) Init(config map[string]any) error {
+func (m *Middleware) Init(config map[string]interface{}) error {
 	issuer, ok := config["issuer"].(string)
 	if !ok {
 		return errors.New("missing issuer")

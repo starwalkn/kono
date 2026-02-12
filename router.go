@@ -1,17 +1,22 @@
-package tokka
+package kono
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/tokka/internal/metric"
-	"github.com/starwalkn/tokka/internal/ratelimit"
+	"github.com/xff16/kono/internal/metric"
+	"github.com/xff16/kono/internal/ratelimit"
 )
 
 type Router struct {
@@ -23,16 +28,6 @@ type Router struct {
 	metrics metric.Metrics
 
 	rateLimiter *ratelimit.RateLimit
-}
-
-type Route struct {
-	Path                 string
-	Method               string
-	Upstreams            []Upstream
-	Aggregation          AggregationConfig
-	MaxParallelUpstreams int64
-	Plugins              []Plugin
-	Middlewares          []Middleware
 }
 
 type RouterConfigSet struct {
@@ -55,8 +50,8 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 
 	if metricsConfig.Enabled {
 		switch metricsConfig.Provider {
-		case "victoriametrics":
-			router.metrics = metric.NewVictoria()
+		case "prometheus":
+			router.metrics = metric.NewPrometheus()
 		default:
 			router.metrics = metric.NewNop()
 		}
@@ -66,11 +61,13 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 		//nolint:gocritic // for the future
 		switch fcfg.Name {
 		case "ratelimit":
-			router.rateLimiter = ratelimit.New(fcfg.Config)
+			if fcfg.Enabled {
+				router.rateLimiter = ratelimit.New(fcfg.Config)
 
-			err := router.rateLimiter.Start()
-			if err != nil {
-				log.Fatal("failed to start ratelimit feature", zap.Error(err))
+				err := router.rateLimiter.Start()
+				if err != nil {
+					log.Fatal("failed to start ratelimit feature", zap.Error(err))
+				}
 			}
 		}
 	}
@@ -111,25 +108,10 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 //
 // The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	start := time.Now()
+	r.metrics.IncRequestsTotal()
 
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
-
-	defer r.metrics.IncRequestsTotal()
-	defer r.metrics.UpdateRequestsDuration(start)
-
-	if r.rateLimiter != nil {
-		ip := req.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = req.RemoteAddr
-		}
-
-		if !r.rateLimiter.Allow(ip) {
-			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
-			return
-		}
-	}
 
 	matchedRoute := r.match(req)
 	if matchedRoute == nil {
@@ -141,35 +123,65 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if r.rateLimiter != nil {
+		if !r.rateLimiter.Allow(extractClientIP(req)) {
+			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		tctx := newContext(req) // Tokka context.
+		start := time.Now()
+		defer r.metrics.UpdateRequestsDuration(matchedRoute.Path, matchedRoute.Method, start)
 
-		requestID := req.Header.Get("X-Request-ID")
+		// Kono internal context
+		tctx := newContext(req)
 
-		// Request-phase plugins.
+		requestID := getOrCreateRequestID(req)
+
+		// Request-phase plugins
 		for _, p := range matchedRoute.Plugins {
 			if p.Type() != PluginTypeRequest {
 				continue
 			}
 
-			r.log.Debug("executing request plugin", zap.String("name", p.Name()))
+			r.log.Debug("executing request plugin", zap.String("name", p.Info().Name))
 
-			p.Execute(tctx)
+			if err := p.Execute(tctx); err != nil {
+				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
+				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+
+				return
+			}
 		}
 
-		// Upstream dispatch.
+		// Upstream dispatch
 		responses := r.dispatcher.dispatch(matchedRoute, req)
 		if responses == nil {
-			// Currently, responses can only be nil if the body size limit is exceeded or body read fails.
+			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
 			WriteError(w, ErrorCodePayloadTooLarge, "request body too large", requestID, http.StatusRequestEntityTooLarge)
 
 			return
 		}
 
+		headers := http.Header{
+			"X-Request-ID": []string{requestID},
+			// TODO: Think about several encoding options
+			"Content-Type": []string{"application/json; charset=utf-8"},
+		}
+
+		// Sets backends response headers
+		for _, resp := range responses {
+			// TODO: Consider a blacklist of returning headers
+			for k, v := range resp.Headers {
+				headers[k] = v
+			}
+		}
+
 		r.log.Debug("dispatched responses", zap.Any("responses", responses))
 
-		// Aggregate upstream responses.
+		// Aggregate upstream responses
 		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
 		attachRequestID(aggregated.Errors, requestID)
 
@@ -203,12 +215,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			})
 		}
 
-		headers := http.Header{
-			"X-Request-ID": []string{requestID},
-			"Content-Type": []string{"application/json; charset=utf-8"},
-		}
-
-		// Response-phase plugins.
 		resp := &http.Response{
 			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
 			StatusCode: status,
@@ -216,18 +222,26 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			Header:     headers,
 		}
 
+		// Sets the response to the internal context for plugins
 		tctx.SetResponse(resp)
+
+		// Response-phase plugins
 		for _, p := range matchedRoute.Plugins {
 			if p.Type() != PluginTypeResponse {
 				continue
 			}
 
-			r.log.Debug("executing response plugin", zap.String("name", p.Name()))
+			r.log.Debug("executing response plugin", zap.String("name", p.Info().Name))
 
-			p.Execute(tctx)
+			if err := p.Execute(tctx); err != nil {
+				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
+				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+
+				return
+			}
 		}
 
-		r.metrics.IncResponsesTotal(tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
+		r.metrics.IncResponsesTotal(matchedRoute.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
 
 		// Write final output.
 		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse
@@ -242,13 +256,15 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // match matches the given request to a route.
 func (r *Router) match(req *http.Request) *Route {
-	for _, route := range r.Routes {
-		if route.Method != "" && route.Method != req.Method {
+	for i := range r.Routes {
+		route := &r.Routes[i]
+
+		if route.Method != "" && !strings.EqualFold(route.Method, req.Method) {
 			continue
 		}
 
 		if route.Path != "" && req.URL.Path == route.Path {
-			return &route
+			return route
 		}
 	}
 
@@ -284,4 +300,34 @@ func mustMarshal(v any) []byte {
 	}
 
 	return b
+}
+
+func extractClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return xrip
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+
+	return r.RemoteAddr
+}
+
+func getOrCreateRequestID(r *http.Request) string {
+	requestID := r.Header.Get("X-Request-ID")
+	if requestID != "" {
+		return requestID
+	}
+
+	t := time.Now()
+	entropy := ulid.Monotonic(rand.Reader, math.MaxInt64)
+
+	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), entropy).String())
 }

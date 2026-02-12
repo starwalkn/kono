@@ -1,5 +1,5 @@
 config_version: v1
-name: Tokka Gateway
+name: Kono Gateway
 version: "0.0.1"
 debug: false
 
@@ -11,31 +11,32 @@ server:
     provider: victoriametrics
 
 dashboard:
-  enable: true
+  enabled: true
   port: 7806
   timeout: 30s
 
 features:
   - name: ratelimit
+    enabled: true
     config:
       limit: 10
       window: 1
 
 middlewares:
   - name: recoverer
-    path: /tokka/middlewares/recoverer.so
+    path: /kono/middlewares/recoverer.so
     can_fail_on_load: false
     config:
       enabled: true
 
   - name: logger
-    path: /tokka/middlewares/logger.so
+    path: /kono/middlewares/logger.so
     can_fail_on_load: false
     config:
       enabled: true
 
   - name: auth
-    path: /tokka/middlewares/auth.so
+    path: /kono/middlewares/auth.so
     can_fail_on_load: false
     config:
       enabled: true
@@ -55,17 +56,17 @@ routes:
       - url: http://user-service.local/v1/users
         method: GET
         timeout: 3s
-        forward_query_strings: ["*"]
-        forward_headers: ["X-*"]
+        forward_query_strings: [ "*" ]
+        forward_headers: [ "X-*" ]
         policy:
-          allowed_statuses: [200, 404]
+          allowed_statuses: [ 200, 404 ]
           require_body: true
           map_status_codes:
             403: 404
           max_response_body_size: 4096
           retry:
             max_retries: 3
-            retry_on_statuses: [500, 502, 503]
+            retry_on_statuses: [ 500, 502, 503 ]
             backoff_delay: 1s
           circuit_breaker:
             enabled: true
@@ -73,7 +74,7 @@ routes:
             reset_timeout: 2s
       - url: http://profile-service.local/v1/details
         method: GET
-        forward_headers: ["X-Request-ID"]
+        forward_headers: [ "X-Request-ID" ]
         policy:
           circuit_breaker:
             enabled: true
@@ -88,7 +89,7 @@ routes:
     max_parallel_upstreams: 3
     middlewares:
       - name: logger
-        path: /tokka/middlewares/logger.so
+        path: /kono/middlewares/logger.so
         override: true
         config:
           enabled: false
@@ -96,8 +97,8 @@ routes:
       - url: http://domain-service.local/v1/domains
         method: GET
         timeout: 3s
-        forward_query_strings: ["*"]
-        forward_headers: ["X-For*"]
+        forward_query_strings: [ "*" ]
+        forward_headers: [ "X-For*" ]
         policy:
           circuit_breaker:
             enabled: true
@@ -106,8 +107,8 @@ routes:
       - url: http://profile-service.local/v1/details
         method: GET
         timeout: 2s
-        forward_query_strings: ["id"]
-        forward_headers: ["X-For"]
+        forward_query_strings: [ "id" ]
+        forward_headers: [ "X-For" ]
         policy:
           circuit_breaker:
             enabled: true
@@ -121,7 +122,7 @@ routes:
       allow_partial_results: false
     middlewares:
       - name: compressor
-        path: /tokka/middlewares/compressor.so
+        path: /kono/middlewares/compressor.so
         can_fail_on_load: false
         config:
           enabled: true
@@ -140,13 +141,13 @@ routes:
       allow_partial_results: false
     middlewares:
       - name: compressor
-        path: /tokka/middlewares/compressor.so
+        path: /kono/middlewares/compressor.so
         can_fail_on_load: false
         config:
           enabled: true
           alg: deflate
       - name: recoverer
-        path: /tokka/middlewares/recoverer.so
+        path: /kono/middlewares/recoverer.so
         can_fail_on_load: true
         override: true
         config:

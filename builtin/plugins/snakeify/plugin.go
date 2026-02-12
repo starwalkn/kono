@@ -3,47 +3,49 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log"
 	"regexp"
 	"strings"
 
-	"github.com/starwalkn/tokka"
+	"github.com/xff16/kono"
 )
 
-type Plugin struct {
-	tokka.BasePlugin
-}
+type Plugin struct{}
 
-func NewPlugin() tokka.Plugin {
+func NewPlugin() kono.Plugin {
 	return &Plugin{}
 }
 
-func (p *Plugin) Name() string {
-	return "snakeify"
+func (p *Plugin) Info() kono.PluginInfo {
+	return kono.PluginInfo{
+		Name:        "snakeify",
+		Description: "The plugin can be used to transform JSON field names in the response into the snake_case style.",
+		Version:     "v1",
+		Author:      "xff16",
+	}
 }
 
-func (p *Plugin) Type() tokka.PluginType {
-	return tokka.PluginTypeResponse
+func (p *Plugin) Type() kono.PluginType {
+	return kono.PluginTypeResponse
 }
 
-func (p *Plugin) Init(_ map[string]any) {}
+func (p *Plugin) Init(_ map[string]interface{}) {}
 
-func (p *Plugin) Execute(ctx tokka.Context) {
+func (p *Plugin) Execute(ctx kono.Context) error {
 	if ctx.Response() == nil || ctx.Response().Body == nil {
-		return
+		return nil
 	}
 
-	var data map[string]any
+	var data map[string]interface{}
 
 	buf := new(bytes.Buffer)
 	_, _ = buf.ReadFrom(ctx.Response().Body)
 	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
-		log.Printf("snakeify: cannot unmarshal JSON: %v", err)
-		return
+		return fmt.Errorf("snakeify: cannot unmarshal JSON: %w", err)
 	}
 
-	newData := make(map[string]any)
+	newData := make(map[string]interface{})
 	for k, v := range data {
 		newKey := camelToSnake(k)
 		newData[newKey] = v
@@ -51,11 +53,12 @@ func (p *Plugin) Execute(ctx tokka.Context) {
 
 	newBody, err := json.Marshal(newData)
 	if err != nil {
-		log.Printf("snakeify: cannot marshal JSON: %v", err)
-		return
+		return fmt.Errorf("snakeify: cannot marshal JSON: %w", err)
 	}
 
 	ctx.Response().Body = io.NopCloser(bytes.NewReader(newBody))
+
+	return nil
 }
 
 func camelToSnake(s string) string {
@@ -64,5 +67,6 @@ func camelToSnake(s string) string {
 
 	s = re1.ReplaceAllString(s, "${1}_${2}")
 	s = re2.ReplaceAllString(s, "${1}_${2}")
+
 	return strings.ToLower(s)
 }

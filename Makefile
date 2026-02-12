@@ -9,7 +9,7 @@ all: clean build plugins
 
 build:
 	mkdir -p .bin
-	CGO_ENABLED=1 go build -o .bin/tokka ./cmd/gateway/main.go
+	CGO_ENABLED=1 go build -o .bin/kono ./cmd/kono
 
 plugins:
 	mkdir -p $(PLUGIN_OUT)

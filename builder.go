@@ -1,15 +1,16 @@
-package tokka
+package kono
 
 import (
-	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/tokka/internal/circuitbreaker"
-	"github.com/starwalkn/tokka/internal/metric"
+	"github.com/xff16/kono/internal/circuitbreaker"
+	"github.com/xff16/kono/internal/metric"
 )
 
 func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
@@ -35,7 +36,7 @@ func initGlobalMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) (map[string
 	globalMiddlewares := make([]Middleware, 0, len(cfgs))
 
 	for i, cfg := range cfgs {
-		soMiddleware := loadMiddlewareFromSO(cfg.Path, cfg.Config, log)
+		soMiddleware := loadMiddleware(cfg.Path, cfg.Config, log)
 		if soMiddleware == nil {
 			log.Error(
 				"cannot load middleware from .so",
@@ -61,14 +62,14 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 
 	for _, cfg := range cfgs {
 		cfn := func(plugin Plugin) bool {
-			return plugin.Name() == cfg.Name
+			return plugin.Info().Name == cfg.Name
 		}
 
 		if slices.ContainsFunc(plugins, cfn) {
 			continue
 		}
 
-		soPlugin := loadPluginFromSO(cfg.Path, cfg.Config, log)
+		soPlugin := loadPlugin(cfg.Path, cfg.Config, log)
 		if soPlugin == nil {
 			log.Error(
 				"cannot load plugin from .so",
@@ -80,7 +81,7 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 
 		log.Info(
 			"plugin initialized",
-			zap.String("name", soPlugin.Name()),
+			zap.Any("name", soPlugin.Info()),
 		)
 
 		plugins = append(plugins, soPlugin)
@@ -100,18 +101,19 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 		ForceAttemptHTTP2:   true,
 	}
 
+	// Build upstream policy
 	for _, cfg := range cfgs {
-		policy := UpstreamPolicy{
+		policy := Policy{
 			AllowedStatuses:     cfg.Policy.AllowedStatuses,
 			RequireBody:         cfg.Policy.RequireBody,
 			MapStatusCodes:      cfg.Policy.MapStatusCodes,
 			MaxResponseBodySize: cfg.Policy.MaxResponseBodySize,
-			RetryPolicy: UpstreamRetryPolicy{
+			RetryPolicy: RetryPolicy{
 				MaxRetries:      cfg.Policy.RetryConfig.MaxRetries,
 				RetryOnStatuses: cfg.Policy.RetryConfig.RetryOnStatuses,
 				BackoffDelay:    cfg.Policy.RetryConfig.BackoffDelay,
 			},
-			CircuitBreaker: UpstreamCircuitBreaker{
+			CircuitBreaker: CircuitBreakerPolicy{
 				Enabled:      cfg.Policy.CircuitBreakerConfig.Enabled,
 				MaxFailures:  cfg.Policy.CircuitBreakerConfig.MaxFailures,
 				ResetTimeout: cfg.Policy.CircuitBreakerConfig.ResetTimeout,
@@ -123,12 +125,17 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 			circuitBreaker = circuitbreaker.New(policy.CircuitBreaker.MaxFailures, policy.CircuitBreaker.ResetTimeout)
 		}
 
+		name := cfg.Name
+		if name == "" {
+			makeUpstreamName(cfg.Method, cfg.Hosts)
+		}
+
 		upstream := &httpUpstream{
-			name:                fmt.Sprintf("%s_%s", cfg.Method, cfg.URL),
-			url:                 cfg.URL,
+			id:                  uuid.NewString(),
+			name:                name,
+			hosts:               cfg.Hosts,
 			method:              cfg.Method,
 			timeout:             cfg.Timeout,
-			headers:             cfg.Headers,
 			forwardHeaders:      cfg.ForwardHeaders,
 			forwardQueryStrings: cfg.ForwardQueryStrings,
 			policy:              policy,
@@ -144,6 +151,23 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 	return upstreams
 }
 
+func makeUpstreamName(method string, hosts []string) string {
+	sb := strings.Builder{}
+
+	sb.WriteString(strings.ToUpper(method))
+	sb.WriteString("-")
+
+	for i, host := range hosts {
+		sb.WriteString(host)
+
+		if i != len(hosts)-1 {
+			sb.WriteString("-")
+		}
+	}
+
+	return sb.String()
+}
+
 func initRoute(cfg RouteConfig, globalMiddlewares []Middleware, globalMiddlewareIndices map[string]int, log *zap.Logger) Route {
 	var (
 		globalMiddlewaresCopy = append([]Middleware(nil), globalMiddlewares...)
@@ -151,7 +175,7 @@ func initRoute(cfg RouteConfig, globalMiddlewares []Middleware, globalMiddleware
 	)
 
 	for _, mcfg := range cfg.Middlewares {
-		soMiddleware := loadMiddlewareFromSO(mcfg.Path, mcfg.Config, log)
+		soMiddleware := loadMiddleware(mcfg.Path, mcfg.Config, log)
 		if soMiddleware == nil {
 			log.Error("cannot load middleware from .so", zap.String("name", mcfg.Name))
 

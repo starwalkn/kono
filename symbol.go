@@ -1,4 +1,4 @@
-package tokka
+package kono
 
 import (
 	"plugin"

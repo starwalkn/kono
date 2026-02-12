@@ -3,7 +3,7 @@ import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 
 const config: Config = {
-  title: "Tokka",
+  title: "Kono",
   tagline: "Extensible API Gateway",
   favicon: "img/logo.jpg",
 
@@ -11,11 +11,11 @@ const config: Config = {
     v4: true,
   },
 
-  url: "https://starwalkn.github.io",
-  baseUrl: "/tokka/",
+  url: "https://xff16.github.io",
+  baseUrl: "/kono/",
 
-  organizationName: "starwalkn",
-  projectName: "tokka",
+  organizationName: "xff16",
+  projectName: "kono",
 
   onBrokenLinks: "throw",
 
@@ -31,7 +31,7 @@ const config: Config = {
         docs: {
           routeBasePath: "/",
           sidebarPath: "./sidebars.ts",
-          editUrl: "https://github.com/starwalkn/tokka/edit/master/docs/",
+          editUrl: "https://github.com/xff16/kono/edit/master/docs/",
         },
         blog: false,
         theme: {
@@ -52,7 +52,7 @@ const config: Config = {
     navbar: {
       title: "Home",
       logo: {
-        alt: "Tokka Logo",
+        alt: "Kono Logo",
         src: "img/logo.jpg",
       },
       items: [
@@ -63,7 +63,7 @@ const config: Config = {
           position: "left",
         },
         {
-          href: "https://github.com/starwalkn/tokka",
+          href: "https://github.com/xff16/kono",
           label: "GitHub",
           position: "right",
         },
@@ -87,16 +87,16 @@ const config: Config = {
       //     items: [
       //       {
       //         label: "GitHub",
-      //         href: "https://github.com/starwalkn/tokka",
+      //         href: "https://github.com/xff16/kono",
       //       },
       //       {
       //         label: "Issues",
-      //         href: "https://github.com/starwalkn/tokka/issues",
+      //         href: "https://github.com/xff16/kono/issues",
       //       },
       //     ],
       //   },
       // ],
-      copyright: `Copyright © ${new Date().getFullYear()} Tokka`,
+      copyright: `Copyright © ${new Date().getFullYear()} Kono`,
     },
 
     prism: {

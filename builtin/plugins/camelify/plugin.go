@@ -3,46 +3,48 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log"
 	"strings"
 
-	"github.com/starwalkn/tokka"
+	"github.com/xff16/kono"
 )
 
-type Plugin struct {
-	tokka.BasePlugin
-}
+type Plugin struct{}
 
-func NewPlugin() tokka.Plugin {
+func NewPlugin() kono.Plugin {
 	return &Plugin{}
 }
 
-func (p *Plugin) Name() string {
-	return "camelify"
+func (p *Plugin) Info() kono.PluginInfo {
+	return kono.PluginInfo{
+		Name:        "camelify",
+		Description: "The plugin can be used to transform JSON field names in the response into the camelCasestyle.",
+		Version:     "v1",
+		Author:      "xff16",
+	}
 }
 
-func (p *Plugin) Type() tokka.PluginType {
-	return tokka.PluginTypeResponse
+func (p *Plugin) Type() kono.PluginType {
+	return kono.PluginTypeResponse
 }
 
-func (p *Plugin) Init(_ map[string]any) {}
+func (p *Plugin) Init(_ map[string]interface{}) {}
 
-func (p *Plugin) Execute(ctx tokka.Context) {
+func (p *Plugin) Execute(ctx kono.Context) error {
 	if ctx.Response() == nil || ctx.Response().Body == nil {
-		return
+		return nil
 	}
 
-	var data map[string]any
+	var data map[string]interface{}
 
 	buf := new(bytes.Buffer)
 	_, _ = buf.ReadFrom(ctx.Response().Body)
 	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
-		log.Printf("camelify: cannot unmarshal JSON: %v", err)
-		return
+		return fmt.Errorf("camelify: cannot unmarshal JSON: %w", err)
 	}
 
-	newData := make(map[string]any)
+	newData := make(map[string]interface{})
 	for k, v := range data {
 		newKey := snakeToCamel(k)
 		newData[newKey] = v
@@ -50,19 +52,22 @@ func (p *Plugin) Execute(ctx tokka.Context) {
 
 	newBody, err := json.Marshal(newData)
 	if err != nil {
-		log.Printf("camelify: cannot marshal JSON: %v", err)
-		return
+		return fmt.Errorf("camelify: cannot marshal JSON: %w", err)
 	}
 
 	ctx.Response().Body = io.NopCloser(bytes.NewReader(newBody))
+
+	return nil
 }
 
 func snakeToCamel(s string) string {
 	parts := strings.Split(s, "_")
+
 	for i := 1; i < len(parts); i++ {
 		if len(parts[i]) > 0 {
 			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
 		}
 	}
+
 	return strings.Join(parts, "")
 }

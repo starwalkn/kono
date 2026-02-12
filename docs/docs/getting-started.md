@@ -6,4 +6,4 @@ title: Getting Started
 ## Install via Docker
 
 ```bash
-docker pull starwalkn/tokka:latest
+docker pull xff16/kono:latest

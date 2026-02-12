@@ -1,4 +1,4 @@
-package tokka
+package kono
 
 import (
 	"encoding/json"
@@ -38,12 +38,12 @@ func TestAggregator_Merge_Success(t *testing.T) {
 		AllowPartialResults: false,
 	})
 
-	var got map[string]any
+	var got map[string]interface{}
 	if err := json.Unmarshal(aggregated.Data, &got); err != nil {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	want := map[string]any{
+	want := map[string]interface{}{
 		"a": float64(1),
 		"b": float64(3),
 		"c": float64(4),
@@ -67,12 +67,12 @@ func TestAggregator_Merge_PartialAllowed(t *testing.T) {
 		AllowPartialResults: true,
 	})
 
-	var got map[string]any
+	var got map[string]interface{}
 	if err := json.Unmarshal(aggregated.Data, &got); err != nil {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	want := map[string]any{
+	want := map[string]interface{}{
 		"a": float64(1),
 	}
 
@@ -119,12 +119,12 @@ func TestAggregator_Array_Success(t *testing.T) {
 		AllowPartialResults: false,
 	})
 
-	var got []map[string]any
+	var got []map[string]interface{}
 	if err := json.Unmarshal(aggregated.Data, &got); err != nil {
 		t.Fatalf("failed to unmarshal array: %v", err)
 	}
 
-	want := []map[string]any{
+	want := []map[string]interface{}{
 		{"x": float64(1)},
 		{"y": float64(2)},
 	}

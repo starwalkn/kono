@@ -13,7 +13,7 @@ const FeatureList: FeatureItem[] = [
     title: "Extensible by Design",
     description: (
       <>
-        Tokka supports dynamic plugins and middlewares, allowing you to extend
+        Kono supports dynamic plugins and middlewares, allowing you to extend
         gateway behavior without recompilation.
       </>
     ),

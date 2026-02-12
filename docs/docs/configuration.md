@@ -3,17 +3,17 @@ id: configuration
 title: Configuration
 ---
 
-# Tokka Gateway Configuration
+# Kono Gateway Configuration
 
-This document describes the configuration file format for Tokka Gateway (schema v1), including server settings, routes, upstreams, policies, plugins, and middlewares.
+This document describes the configuration file format for Kono Gateway (schema v1), including server settings, routes, upstreams, policies, plugins, and middlewares.
 
-Tokka uses a single declarative configuration file (YAML / JSON / TOML) to define request routing, upstream aggregation, retries, and extensibility.
+Kono uses a single declarative configuration file (YAML / JSON / TOML) to define request routing, upstream aggregation, retries, and extensibility.
 
 ## Root Configuration
 
 ```yaml
 schema: v1
-name: Tokka Gateway
+name: Kono Gateway
 version: "0.0.1"
 debug: false
 ```
@@ -86,7 +86,7 @@ Middlewares wrap HTTP handlers and execute inside the request lifecycle.
 ```yaml
 middlewares:
   - name: recoverer
-    path: /tokka/middlewares/recoverer.so
+    path: /kono/middlewares/recoverer.so
     can_fail_on_load: false
     config:
       enabled: true
@@ -209,7 +209,7 @@ This document applies to:
 
 ```yaml
 schema: v1
-Tokka Gateway >= 0.0.1
+Kono Gateway >= 0.0.1
 ```
 
 Future versions may introduce additional fields or deprecate existing ones.
@@ -224,7 +224,7 @@ import TabItem from '@theme/TabItem';
   <TabItem value="yaml" label="YAML" default>
 ```yaml
 config_version: v1
-name: Tokka Gateway
+name: Kono Gateway
 version: "0.0.1"
 debug: false
 
@@ -248,19 +248,19 @@ features:
 
 middlewares:
   - name: recoverer
-    path: /tokka/middlewares/recoverer.so
+    path: /kono/middlewares/recoverer.so
     can_fail_on_load: false
     config:
       enabled: true
 
   - name: logger
-    path: /tokka/middlewares/logger.so
+    path: /kono/middlewares/logger.so
     can_fail_on_load: false
     config:
       enabled: true
 
   - name: auth
-    path: /tokka/middlewares/auth.so
+    path: /kono/middlewares/auth.so
     can_fail_on_load: false
     config:
       enabled: true
@@ -313,7 +313,7 @@ routes:
     max_parallel_upstreams: 3
     middlewares:
       - name: logger
-        path: /tokka/middlewares/logger.so
+        path: /kono/middlewares/logger.so
         override: true
         config:
           enabled: false
@@ -346,7 +346,7 @@ routes:
       allow_partial_results: false
     middlewares:
       - name: compressor
-        path: /tokka/middlewares/compressor.so
+        path: /kono/middlewares/compressor.so
         can_fail_on_load: false
         config:
           enabled: true
@@ -365,13 +365,13 @@ routes:
       allow_partial_results: false
     middlewares:
       - name: compressor
-        path: /tokka/middlewares/compressor.so
+        path: /kono/middlewares/compressor.so
         can_fail_on_load: false
         config:
           enabled: true
           alg: deflate
       - name: recoverer
-        path: /tokka/middlewares/recoverer.so
+        path: /kono/middlewares/recoverer.so
         can_fail_on_load: true
         override: true
         config:
@@ -389,7 +389,7 @@ routes:
 ```json
 {
   "config_version": "v1",
-  "name": "Tokka Gateway",
+  "name": "Kono Gateway",
   "version": "0.0.1",
   "debug": false,
   "server": {
@@ -417,7 +417,7 @@ routes:
   "middlewares": [
     {
       "name": "recoverer",
-      "path": "/tokka/middlewares/recoverer.so",
+      "path": "/kono/middlewares/recoverer.so",
       "can_fail_on_load": false,
       "config": {
         "enabled": true
@@ -425,7 +425,7 @@ routes:
     },
     {
       "name": "logger",
-      "path": "/tokka/middlewares/logger.so",
+      "path": "/kono/middlewares/logger.so",
       "can_fail_on_load": false,
       "config": {
         "enabled": true
@@ -433,7 +433,7 @@ routes:
     },
     {
       "name": "auth",
-      "path": "/tokka/middlewares/auth.so",
+      "path": "/kono/middlewares/auth.so",
       "can_fail_on_load": false,
       "config": {
         "enabled": true,
@@ -502,7 +502,7 @@ routes:
       "middlewares": [
         {
           "name": "logger",
-          "path": "/tokka/middlewares/logger.so",
+          "path": "/kono/middlewares/logger.so",
           "override": true,
           "config": {
             "enabled": false
@@ -550,7 +550,7 @@ routes:
       "middlewares": [
         {
           "name": "compressor",
-          "path": "/tokka/middlewares/compressor.so",
+          "path": "/kono/middlewares/compressor.so",
           "can_fail_on_load": false,
           "config": {
             "enabled": true,
@@ -580,7 +580,7 @@ routes:
       "middlewares": [
         {
           "name": "compressor",
-          "path": "/tokka/middlewares/compressor.so",
+          "path": "/kono/middlewares/compressor.so",
           "can_fail_on_load": false,
           "config": {
             "enabled": true,
@@ -589,7 +589,7 @@ routes:
         },
         {
           "name": "recoverer",
-          "path": "/tokka/middlewares/recoverer.so",
+          "path": "/kono/middlewares/recoverer.so",
           "can_fail_on_load": true,
           "override": true,
           "config": {
@@ -617,7 +617,7 @@ routes:
   <TabItem value="toml" label="TOML">
 ```toml
 config_version = "v1"
-name = "Tokka Gateway"
+name = "Kono Gateway"
 version = "0.0.1"
 debug = false
 
@@ -642,21 +642,21 @@ window = 1
 
 [[middlewares]]
 name = "recoverer"
-path = "/tokka/middlewares/recoverer.so"
+path = "/kono/middlewares/recoverer.so"
 can_fail_on_load = false
 [middlewares.config]
 enabled = true
 
 [[middlewares]]
 name = "logger"
-path = "/tokka/middlewares/logger.so"
+path = "/kono/middlewares/logger.so"
 can_fail_on_load = false
 [middlewares.config]
 enabled = true
 
 [[middlewares]]
 name = "auth"
-path = "/tokka/middlewares/auth.so"
+path = "/kono/middlewares/auth.so"
 can_fail_on_load = false
 [middlewares.config]
 enabled = true
@@ -713,7 +713,7 @@ allow_partial_results = false
 
 [[routes.middlewares]]
 name = "logger"
-path = "/tokka/middlewares/logger.so"
+path = "/kono/middlewares/logger.so"
 override = true
 [routes.middlewares.config]
 enabled = false
@@ -749,7 +749,7 @@ allow_partial_results = false
 
 [[routes.middlewares]]
 name = "compressor"
-path = "/tokka/middlewares/compressor.so"
+path = "/kono/middlewares/compressor.so"
 can_fail_on_load = false
 [routes.middlewares.config]
 enabled = true
@@ -773,7 +773,7 @@ allow_partial_results = false
 
 [[routes.middlewares]]
 name = "compressor"
-path = "/tokka/middlewares/compressor.so"
+path = "/kono/middlewares/compressor.so"
 can_fail_on_load = false
 [routes.middlewares.config]
 enabled = true
@@ -781,7 +781,7 @@ alg = "deflate"
 
 [[routes.middlewares]]
 name = "recoverer"
-path = "/tokka/middlewares/recoverer.so"
+path = "/kono/middlewares/recoverer.so"
 can_fail_on_load = true
 override = true
 [routes.middlewares.config]

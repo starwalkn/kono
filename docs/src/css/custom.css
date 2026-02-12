@@ -2,11 +2,11 @@
    Fonts
    ========================================================= */
 
-@import url("https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap");
+@import url('https://fonts.googleapis.com/css2?family=Urbanist:ital,wght@0,100..900;1,100..900&display=swap');
 
 @font-face {
-    font-family: "Apercu";
-    src: local("Apercu"), local("Apercu Pro");
+    font-family: "Lexend";
+    src: local("Lexend");
     font-weight: 400;
     font-style: normal;
 }
@@ -17,18 +17,18 @@
 
 [data-theme="light"] {
     --ifm-font-family-base:
-        "Apercu", -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+        "Lexend", -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
         sans-serif;
 
-    --ifm-heading-font-family: "Lora", serif;
+    --ifm-heading-font-family: "Urbanist", serif;
 
     /* Page background */
     --ifm-background-color: hsla(50, 25%, 94%);
 
     /* Content background (lighter beige) */
-    --tokka-content-bg: hsla(50, 35%, 97%);
+    --kono-content-bg: hsla(50, 35%, 97%);
 
-    --ifm-color-primary: #1e3bbd;
+    --ifm-color-primary: #09820c;
     --ifm-color-primary-dark: #182f96;
     --ifm-color-primary-light: #3a55d6;
 
@@ -52,7 +52,7 @@ h3,
 h4,
 h5,
 h6 {
-    font-family: var(--ifm-heading-font-family);
+    font-family: var(--ifm-heading-font-family), serif;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--ifm-color-primary);
@@ -86,7 +86,7 @@ article {
     position: relative;
     z-index: 2;
 
-    background: var(--tokka-content-bg);
+    background: var(--kono-content-bg);
     border-radius: 6px;
 
     padding: 3rem;
@@ -218,7 +218,7 @@ pre code {
 table {
     border-collapse: separate;
     border-spacing: 0;
-    background: var(--tokka-content-bg);
+    background: var(--kono-content-bg);
     border-radius: 6px;
     overflow: hidden;
 }

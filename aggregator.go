@@ -1,4 +1,4 @@
-package tokka
+package kono
 
 import (
 	"encoding/json"
@@ -74,12 +74,12 @@ func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) Aggregated
 }
 
 func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
-	merged := make(map[string]any)
+	merged := make(map[string]interface{})
 
 	var aggregationErrors []JSONError
 
 	for _, resp := range responses {
-		var obj map[string]any
+		var obj map[string]interface{}
 
 		// Handle upstream error.
 		if resp.Err != nil {
@@ -109,7 +109,7 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 			continue
 		}
 
-		// Handle JSON unmarshaling error as internal.
+		// Handle JSON unmarshaling error as internal
 		if err := json.Unmarshal(resp.Body, &obj); err != nil {
 			a.log.Warn(
 				"failed to unmarshal response",
@@ -152,7 +152,7 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 	var aggregationErrors []JSONError
 
 	for _, resp := range responses {
-		// Handle upstream error.
+		// Handle upstream error
 		if resp.Err != nil {
 			mapped := a.mapUpstreamError(resp.Err)
 

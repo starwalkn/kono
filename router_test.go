@@ -1,4 +1,4 @@
-package tokka
+package kono
 
 import (
 	"encoding/json"
@@ -13,7 +13,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/tokka/internal/metric"
+	"github.com/xff16/kono/internal/metric"
 )
 
 func decodeJSONResponse(t *testing.T, body []byte) JSONResponse {
@@ -41,15 +41,26 @@ type mockPlugin struct {
 	fn   func(Context)
 }
 
-func (m *mockPlugin) Init(_ map[string]any) {}
-func (m *mockPlugin) Name() string          { return m.name }
-func (m *mockPlugin) Type() PluginType      { return m.typ }
-func (m *mockPlugin) Execute(ctx Context)   { m.fn(ctx) }
+func (m *mockPlugin) Init(_ map[string]interface{}) {}
+func (m *mockPlugin) Info() PluginInfo {
+	return PluginInfo{
+		Name:        m.name,
+		Description: "Mock plugin",
+		Version:     "v1",
+		Author:      "test",
+	}
+}
+func (m *mockPlugin) Type() PluginType { return m.typ }
+func (m *mockPlugin) Execute(ctx Context) error {
+	m.fn(ctx)
+
+	return nil
+}
 
 type mockMiddleware struct{}
 
-func (m *mockMiddleware) Init(_ map[string]any) error { return nil }
-func (m *mockMiddleware) Name() string                { return "mockmw" }
+func (m *mockMiddleware) Init(_ map[string]interface{}) error { return nil }
+func (m *mockMiddleware) Name() string                        { return "mockmw" }
 func (m *mockMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("X-Middleware", "ok")
@@ -120,9 +131,8 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 			results: []UpstreamResponse{
 				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
 				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind:       UpstreamTimeout,
-					StatusCode: http.StatusInternalServerError,
-					Err:        errors.New("upstream timeout"),
+					Kind: UpstreamTimeout,
+					Err:  errors.New("upstream timeout"),
 				}},
 			},
 		},
@@ -185,9 +195,8 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 			results: []UpstreamResponse{
 				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
 				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind:       UpstreamTimeout,
-					StatusCode: http.StatusInternalServerError,
-					Err:        errors.New("upstream timeout"),
+					Kind: UpstreamTimeout,
+					Err:  errors.New("upstream timeout"),
 				}},
 			},
 		},
@@ -262,14 +271,15 @@ func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
 func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 	var executed []string
 
-	reqPlugin := &mockPlugin{
+	requestPlugin := &mockPlugin{
 		name: "req",
 		typ:  PluginTypeRequest,
 		fn: func(_ Context) {
 			executed = append(executed, "req")
 		},
 	}
-	respPlugin := &mockPlugin{
+
+	responsePlugin := &mockPlugin{
 		name: "resp",
 		typ:  PluginTypeResponse,
 		fn: func(ctx Context) {
@@ -289,7 +299,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 			{
 				Path:    "/test/with/plugins",
 				Method:  http.MethodGet,
-				Plugins: []Plugin{reqPlugin, respPlugin},
+				Plugins: []Plugin{requestPlugin, responsePlugin},
 				Aggregation: AggregationConfig{
 					Strategy:            strategyArray,
 					AllowPartialResults: false,

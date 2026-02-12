@@ -82,7 +82,6 @@ linters:
     - funcorder # checks the order of functions, methods, and constructors
     - funlen # tool for detection of long functions
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
-    - gochecknoglobals # checks that no global variables exist
     - gocognit # computes and checks the cognitive complexity of functions
     - goconst # finds repeated strings that could be replaced by a constant
     - gocritic # provides diagnostics that check for bugs, performance and style issues
@@ -136,6 +135,7 @@ linters:
     #- errcheck # checking for unchecked errors, these unchecked errors can be critical bugs in some cases
     #- gochecknoinits # checks that no init functions are present in Go code
     #- exhaustive # checks exhaustiveness of enum switch statements
+    #- gochecknoglobals # checks that no global variables exist
     #- testpackage # makes you use a separate _test package
     #- arangolint # opinionated best practices for arangodb client
     #- decorder # checks declaration order and count of types, constants, variables and functions

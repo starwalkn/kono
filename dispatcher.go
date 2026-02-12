@@ -1,4 +1,4 @@
-package tokka
+package kono
 
 import (
 	"errors"
@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/starwalkn/tokka/internal/metric"
+	"github.com/xff16/kono/internal/metric"
 )
 
 const maxBodySize = 5 << 20 // 5MB
@@ -59,6 +60,8 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 		go func(i int, u Upstream, originalBody []byte) {
 			defer wg.Done()
 
+			start := time.Now()
+
 			ctx := original.Context()
 
 			if err := sem.Acquire(ctx, 1); err != nil {
@@ -75,9 +78,7 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 			}
 			defer sem.Release(1)
 
-			upstreamPolicy := u.Policy()
-
-			resp := u.Call(ctx, original, originalBody, upstreamPolicy.RetryPolicy)
+			resp := u.Call(ctx, original, originalBody)
 			if resp.Err != nil {
 				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
 				d.log.Error("upstream request failed",
@@ -86,11 +87,11 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 				)
 			}
 
-			if resp.Status != 0 {
-				d.metrics.IncResponsesTotal(resp.Status)
-			}
-
-			var errs []error
+			// Handle upstream policies
+			var (
+				errs           []error
+				upstreamPolicy = u.Policy()
+			)
 
 			if upstreamPolicy.RequireBody && len(resp.Body) == 0 {
 				errs = append(errs, errors.New("empty body not allowed by upstream policy"))
@@ -115,6 +116,8 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 					resp.Err.Err = errors.Join(resp.Err.Err, errors.Join(errs...))
 				}
 			}
+
+			d.metrics.UpdateUpstreamLatency(route.Path, route.Method, u.Name(), time.Since(start))
 
 			results[i] = *resp
 		}(i, u, originalBody)
