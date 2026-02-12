@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono/internal/circuitbreaker"
-	"github.com/xff16/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/circuitbreaker"
+	"github.com/starwalkn/kono/internal/metric"
 )
 
 func initMinimalRouter(routesCount int, log *zap.Logger) *Router {

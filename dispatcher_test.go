@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xff16/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/metric"
 
 	"go.uber.org/zap"
 )

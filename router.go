@@ -15,8 +15,8 @@ import (
 	"github.com/oklog/ulid/v2"
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono/internal/metric"
-	"github.com/xff16/kono/internal/ratelimit"
+	"github.com/starwalkn/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/ratelimit"
 )
 
 type Router struct {

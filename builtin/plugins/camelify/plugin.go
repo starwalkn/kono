@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/xff16/kono"
+	"github.com/starwalkn/kono"
 )
 
 type Plugin struct{}
@@ -19,9 +19,9 @@ func NewPlugin() kono.Plugin {
 func (p *Plugin) Info() kono.PluginInfo {
 	return kono.PluginInfo{
 		Name:        "camelify",
-		Description: "The plugin can be used to transform JSON field names in the response into the camelCasestyle.",
+		Description: "The plugin can be used to transform JSON field names in the response into the camelCase style.",
 		Version:     "v1",
-		Author:      "xff16",
+		Author:      "starwalkn",
 	}
 }
 

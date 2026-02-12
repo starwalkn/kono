@@ -12,9 +12,9 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono"
-	"github.com/xff16/kono/internal/app"
-	"github.com/xff16/kono/internal/logger"
+	"github.com/starwalkn/kono"
+	"github.com/starwalkn/kono/internal/app"
+	"github.com/starwalkn/kono/internal/logger"
 )
 
 var serveCmd = &cobra.Command{

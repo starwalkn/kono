@@ -13,7 +13,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/metric"
 )
 
 func decodeJSONResponse(t *testing.T, body []byte) JSONResponse {

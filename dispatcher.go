@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/xff16/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/metric"
 )
 
 const maxBodySize = 5 << 20 // 5MB

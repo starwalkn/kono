@@ -14,7 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono/internal/circuitbreaker"
+	"github.com/starwalkn/kono/internal/circuitbreaker"
 )
 
 type Upstream interface {

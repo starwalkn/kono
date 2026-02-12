@@ -17,7 +17,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: xff16/kono
+          images: starwalkn/kono
           tags: type=semver,pattern={{version}}
 
       - name: Login to Docker Hub

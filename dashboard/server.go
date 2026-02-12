@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono"
+	"github.com/starwalkn/kono"
 )
 
 type Server struct {

@@ -12,7 +12,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/xff16/kono"
+	"github.com/starwalkn/kono"
 )
 
 type ctxKeyClaims struct{}

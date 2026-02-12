@@ -8,8 +8,8 @@ import (
 	"github.com/VictoriaMetrics/metrics"
 	"go.uber.org/zap"
 
-	"github.com/xff16/kono"
-	"github.com/xff16/kono/dashboard"
+	"github.com/starwalkn/kono"
+	"github.com/starwalkn/kono/dashboard"
 )
 
 type Server struct {

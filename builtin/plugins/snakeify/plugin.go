@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xff16/kono"
+	"github.com/starwalkn/kono"
 )
 
 type Plugin struct{}
@@ -22,7 +22,7 @@ func (p *Plugin) Info() kono.PluginInfo {
 		Name:        "snakeify",
 		Description: "The plugin can be used to transform JSON field names in the response into the snake_case style.",
 		Version:     "v1",
-		Author:      "xff16",
+		Author:      "starwalkn",
 	}
 }
 

@@ -1,4 +1,4 @@
-module github.com/xff16/kono
+module github.com/starwalkn/kono
 
 go 1.25.4
 

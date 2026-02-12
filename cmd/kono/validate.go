@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xff16/kono"
+	"github.com/starwalkn/kono"
 )
 
 var validateCmd = &cobra.Command{
