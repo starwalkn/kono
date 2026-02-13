@@ -151,6 +151,7 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 	return upstreams
 }
 
+// makeUpstreamName returns the upstream name made up of its method and hosts separated by a hyphen.
 func makeUpstreamName(method string, hosts []string) string {
 	sb := strings.Builder{}
 
