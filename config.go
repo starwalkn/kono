@@ -92,6 +92,7 @@ type PolicyConfig struct {
 
 	RetryConfig          RetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
 	CircuitBreakerConfig CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
+	LoadBalancerConfig   LoadBalancerConfig   `json:"load_balancer" yaml:"load_balancer" toml:"load_balancer"`
 }
 
 type RetryConfig struct {
@@ -104,6 +105,10 @@ type CircuitBreakerConfig struct {
 	Enabled      bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
 	MaxFailures  int           `json:"max_failures" yaml:"max_failures" toml:"max_failures"`
 	ResetTimeout time.Duration `json:"reset_timeout" yaml:"reset_timeout" toml:"reset_timeout"`
+}
+
+type LoadBalancerConfig struct {
+	Mode string `json:"mode" yaml:"mode" toml:"mode" validate:"required,oneof=round_robin least_conn"`
 }
 
 type PluginConfig struct {

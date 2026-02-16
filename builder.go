@@ -118,6 +118,9 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 				MaxFailures:  cfg.Policy.CircuitBreakerConfig.MaxFailures,
 				ResetTimeout: cfg.Policy.CircuitBreakerConfig.ResetTimeout,
 			},
+			LoadBalancer: LoadBalancerPolicy{
+				Mode: cfg.Policy.LoadBalancerConfig.Mode,
+			},
 		}
 
 		var circuitBreaker *circuitbreaker.CircuitBreaker
@@ -139,6 +142,7 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 			forwardHeaders:      cfg.ForwardHeaders,
 			forwardQueryStrings: cfg.ForwardQueryStrings,
 			policy:              policy,
+			activeConnections:   make([]int64, len(cfg.Hosts)),
 			client: &http.Client{
 				Transport: transport,
 			},
