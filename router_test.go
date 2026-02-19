@@ -16,10 +16,10 @@ import (
 	"github.com/starwalkn/kono/internal/metric"
 )
 
-func decodeJSONResponse(t *testing.T, body []byte) JSONResponse {
+func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
 	t.Helper()
 
-	var resp JSONResponse
+	var resp ClientResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("invalid JSON response: %v\nbody=%s", err, body)
 	}
@@ -175,8 +175,8 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
 	}
 
-	if resp.Errors[0].Code != ErrorCodeUpstreamUnavailable && resp.Errors[0].Message != "service temporarily unavailable" {
-		t.Fatalf("unexpected error code or message %s %s", resp.Errors[0].Code, resp.Errors[0].Message)
+	if resp.Errors[0] != ClientErrUpstreamUnavailable {
+		t.Fatalf("unexpected error code: %s", resp.Errors[0])
 	}
 
 	var got []string
@@ -243,8 +243,8 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
 	}
 
-	if resp.Errors[0].Code != ErrorCodeUpstreamUnavailable && resp.Errors[0].Message != "service temporarily unavailable" {
-		t.Fatalf("unexpected error code or message %s %s", resp.Errors[0].Code, resp.Errors[0].Message)
+	if resp.Errors[0] != ClientErrUpstreamUnavailable {
+		t.Fatalf("unexpected error code: %s", resp.Errors[0])
 	}
 }
 

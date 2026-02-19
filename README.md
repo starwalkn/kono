@@ -1,4 +1,3 @@
-
 <h1 align="center">Kono API Gateway</h1>
 
 <p align="center">A lightweight, modular, and high-performance <strong>API Gateway</strong> for modern microservices.</p>

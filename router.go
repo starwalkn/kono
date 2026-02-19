@@ -125,7 +125,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if r.rateLimiter != nil {
 		if !r.rateLimiter.Allow(extractClientIP(req)) {
-			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
+			WriteError(w, ClientErrRateLimitExceeded, http.StatusTooManyRequests)
 			return
 		}
 	}
@@ -149,7 +149,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err := p.Execute(tctx); err != nil {
 				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
 			}
@@ -160,7 +160,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if responses == nil {
 			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
-			WriteError(w, ErrorCodePayloadTooLarge, "request body too large", requestID, http.StatusRequestEntityTooLarge)
+			WriteError(w, ClientErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
 
 			return
 		}
@@ -183,7 +183,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		// Aggregate upstream responses
 		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
-		attachRequestID(aggregated.Errors, requestID)
 
 		r.log.Debug("aggregated responses",
 			zap.String("strategy", matchedRoute.Aggregation.Strategy),
@@ -197,19 +196,19 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		case len(aggregated.Errors) > 0 && !aggregated.Partial:
 			status = http.StatusInternalServerError
 
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   nil,
 				Errors: aggregated.Errors,
 			})
 		case aggregated.Partial:
 			status = http.StatusPartialContent
 
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: aggregated.Errors,
 			})
 		default:
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: nil,
 			})
@@ -235,7 +234,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err := p.Execute(tctx); err != nil {
 				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
 			}
@@ -283,12 +282,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
 		_ = resp.Body.Close()
-	}
-}
-
-func attachRequestID(errs []JSONError, requestID string) {
-	for i := range errs {
-		errs[i].RequestID = requestID
 	}
 }
 

@@ -12,6 +12,7 @@ type Policy struct {
 
 	RetryPolicy    RetryPolicy
 	CircuitBreaker CircuitBreakerPolicy
+	LoadBalancer   LoadBalancerPolicy
 }
 
 // RetryPolicy specifies retry behavior for an upstream, including max retries, which statuses trigger retries,
@@ -28,4 +29,13 @@ type CircuitBreakerPolicy struct {
 	Enabled      bool
 	MaxFailures  int
 	ResetTimeout time.Duration
+}
+
+const (
+	LBModeRoundRobin = "round_robin"
+	LBModeLeastConns = "least_conns"
+)
+
+type LoadBalancerPolicy struct {
+	Mode string // Round Robin, Least Connections, etc...
 }

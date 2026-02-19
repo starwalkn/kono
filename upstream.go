@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"slices"
@@ -63,12 +64,14 @@ type httpUpstream struct {
 	id                  string // UUID for internal usage.
 	name                string // For logs.
 	hosts               []string
-	currentHostIdx      uint64
 	method              string
 	timeout             time.Duration
 	forwardHeaders      []string
 	forwardQueryStrings []string
 	policy              Policy
+
+	currentHostIdx    int64   // Round Robin.
+	activeConnections []int64 // Least Connections.
 
 	circuitBreaker *circuitbreaker.CircuitBreaker
 
@@ -150,7 +153,14 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
 
-	req, err := u.newRequest(ctx, original, originalBody)
+	selectedHost := u.selectHost()
+
+	if u.policy.LoadBalancer.Mode == LBModeLeastConns {
+		atomic.AddInt64(&u.activeConnections[selectedHost], 1)
+		defer atomic.AddInt64(&u.activeConnections[selectedHost], -1)
+	}
+
+	req, err := u.newRequest(ctx, original, originalBody, u.hosts[selectedHost])
 	if err != nil {
 		uresp.Err = &UpstreamError{
 			Kind: UpstreamInternal,
@@ -227,7 +237,7 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 	return uresp
 }
 
-func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte) (*http.Request, error) {
+func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte, targetHost string) (*http.Request, error) {
 	method := u.method
 	if method == "" {
 		// Fallback method.
@@ -239,7 +249,7 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 		originalBody = nil
 	}
 
-	target, err := http.NewRequestWithContext(ctx, method, u.selectHost(), bytes.NewReader(originalBody))
+	target, err := http.NewRequestWithContext(ctx, method, targetHost, bytes.NewReader(originalBody))
 	if err != nil {
 		return nil, err
 	}
@@ -250,17 +260,41 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 	return target, nil
 }
 
-func (u *httpUpstream) selectHost() string {
+// selectHost returns the index of selected host in hosts slice.
+func (u *httpUpstream) selectHost() int64 {
 	if len(u.hosts) == 1 {
-		return u.hosts[0]
+		return 0
 	}
 
-	idx := atomic.AddUint64(&u.currentHostIdx, 1)
-	host := u.hosts[idx%uint64(len(u.hosts))]
+	var selectedHost int64
 
-	u.log.Debug("new host selected", zap.String("host", host), zap.String("upstream", u.name))
+	switch u.policy.LoadBalancer.Mode {
+	case LBModeRoundRobin:
+		idx := atomic.AddInt64(&u.currentHostIdx, 1)
+		selectedHost = idx % int64(len(u.hosts))
+	case LBModeLeastConns:
+		var (
+			best           int64
+			minActiveConns int64 = math.MaxInt64
+		)
 
-	return host
+		for i := range u.hosts {
+			curHostActiveConns := atomic.LoadInt64(&u.activeConnections[i])
+
+			if curHostActiveConns < minActiveConns {
+				minActiveConns = curHostActiveConns
+				best = int64(i)
+			}
+		}
+
+		selectedHost = best
+	default:
+		selectedHost = 0
+	}
+
+	u.log.Debug("new host selected", zap.String("host", u.hosts[selectedHost]), zap.String("upstream", u.name))
+
+	return selectedHost
 }
 
 func (u *httpUpstream) resolveQueryStrings(target, original *http.Request) {

@@ -15,7 +15,7 @@ const (
 
 type AggregatedResponse struct {
 	Data    json.RawMessage
-	Errors  []JSONError
+	Errors  []ClientError
 	Partial bool
 }
 
@@ -57,7 +57,7 @@ func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) Aggregated
 	if resp.Err != nil {
 		return AggregatedResponse{
 			Data:    nil,
-			Errors:  []JSONError{a.mapUpstreamError(resp.Err)},
+			Errors:  []ClientError{a.mapUpstreamError(resp.Err)},
 			Partial: false,
 		}
 	}
@@ -76,31 +76,31 @@ func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) Aggregated
 func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
 	merged := make(map[string]interface{})
 
-	var aggregationErrors []JSONError
+	var aggregationErrors []ClientError
 
 	for _, resp := range responses {
 		var obj map[string]interface{}
 
-		// Handle upstream error.
+		// Handle upstream error
 		if resp.Err != nil {
-			mapped := a.mapUpstreamError(resp.Err)
+			clientError := a.mapUpstreamError(resp.Err)
 
 			a.log.Warn(
 				"upstream has errors",
 				zap.Bool("allow_partial_results", allowPartialResults),
 				zap.String("upstream_error", resp.Err.Unwrap().Error()),
-				zap.String("mapped_error", mapped.Message),
+				zap.String("client_error", clientError.String()),
 			)
 
 			if !allowPartialResults {
 				return AggregatedResponse{
 					Data:    nil,
-					Errors:  []JSONError{mapped},
+					Errors:  []ClientError{clientError},
 					Partial: false,
 				}
 			}
 
-			aggregationErrors = append(aggregationErrors, mapped)
+			aggregationErrors = append(aggregationErrors, clientError)
 
 			continue
 		}
@@ -121,10 +121,7 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 				return jsonParseError()
 			}
 
-			aggregationErrors = append(aggregationErrors, JSONError{
-				Code:    ErrorCodeUpstreamMalformed,
-				Message: "upstream malformed",
-			})
+			aggregationErrors = append(aggregationErrors, ClientErrUpstreamMalformed)
 
 			continue
 		}
@@ -149,29 +146,29 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
 	var arr []json.RawMessage
 
-	var aggregationErrors []JSONError
+	var aggregationErrors []ClientError
 
 	for _, resp := range responses {
 		// Handle upstream error
 		if resp.Err != nil {
-			mapped := a.mapUpstreamError(resp.Err)
+			clientError := a.mapUpstreamError(resp.Err)
 
 			a.log.Warn(
 				"upstream has errors",
 				zap.Bool("allow_partial_results", allowPartialResults),
 				zap.String("upstream_error", resp.Err.Unwrap().Error()),
-				zap.String("mapped_error", mapped.Message),
+				zap.String("client_error", clientError.String()),
 			)
 
 			if !allowPartialResults {
 				return AggregatedResponse{
 					Data:    nil,
-					Errors:  []JSONError{mapped},
+					Errors:  []ClientError{clientError},
 					Partial: false,
 				}
 			}
 
-			aggregationErrors = append(aggregationErrors, mapped)
+			aggregationErrors = append(aggregationErrors, clientError)
 
 			continue
 		}
@@ -197,71 +194,49 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 	return aggregationResponse
 }
 
-func (a *defaultAggregator) mapUpstreamError(err error) JSONError {
+func (a *defaultAggregator) mapUpstreamError(err error) ClientError {
 	var ue *UpstreamError
 
 	if !errors.As(err, &ue) {
-		return JSONError{
-			Code:    ErrorCodeInternal,
-			Message: "internal error",
-		}
+		return ClientErrInternal
 	}
 
 	switch ue.Kind { //nolint:exhaustive // will be in future releases
 	case UpstreamTimeout, UpstreamConnection:
-		return JSONError{
-			Code:    ErrorCodeUpstreamUnavailable,
-			Message: "service temporarily unavailable",
-		}
+		return ClientErrUpstreamUnavailable
 	case UpstreamBadStatus:
-		return JSONError{
-			Code:    ErrorCodeUpstreamError,
-			Message: "upstream error",
-		}
+		return ClientErrUpstreamError
 	default:
-		return JSONError{
-			Code:    ErrorCodeInternal,
-			Message: "internal error",
-		}
+		return ClientErrInternal
 	}
 }
 
 func internalAggregationError() AggregatedResponse {
 	return AggregatedResponse{
-		Data: nil,
-		Errors: []JSONError{
-			{
-				Code:    ErrorCodeInternal,
-				Message: "server error",
-			},
-		},
+		Data:    nil,
+		Errors:  []ClientError{ClientErrInternal},
 		Partial: false,
 	}
 }
 
 func jsonParseError() AggregatedResponse {
 	return AggregatedResponse{
-		Data: nil,
-		Errors: []JSONError{
-			{
-				Code:    ErrorCodeUpstreamMalformed,
-				Message: "upstream malformed",
-			},
-		},
+		Data:    nil,
+		Errors:  []ClientError{ClientErrUpstreamMalformed},
 		Partial: false,
 	}
 }
 
-func dedupeErrors(errs []JSONError) []JSONError {
-	seen := make(map[string]struct{})
-	out := make([]JSONError, 0, len(errs))
+func dedupeErrors(errs []ClientError) []ClientError {
+	seen := make(map[ClientError]struct{})
+	out := make([]ClientError, 0, len(errs))
 
 	for _, e := range errs {
-		if _, ok := seen[e.Code]; ok {
+		if _, ok := seen[e]; ok {
 			continue
 		}
 
-		seen[e.Code] = struct{}{}
+		seen[e] = struct{}{}
 		out = append(out, e)
 	}
 
