@@ -31,22 +31,20 @@ type Router struct {
 }
 
 type RouterConfigSet struct {
-	Version     string
-	Routes      []RouteConfig
-	Middlewares []MiddlewareConfig
-	Features    []FeatureConfig
-	Metrics     MetricsConfig
+	Version           string
+	Router            RouterConfig
+	GlobalMiddlewares []MiddlewareConfig
+	Metrics           MetricsConfig
 }
 
 func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 	var (
-		routeConfigs            = routerConfigSet.Routes
-		globalMiddlewareConfigs = routerConfigSet.Middlewares
-		featureConfigs          = routerConfigSet.Features
+		routerConfig            = routerConfigSet.Router
+		globalMiddlewareConfigs = routerConfigSet.GlobalMiddlewares
 		metricsConfig           = routerConfigSet.Metrics
 	)
 
-	router := initMinimalRouter(len(routeConfigs), log)
+	router := initMinimalRouter(len(routerConfig.Routes), log)
 
 	if metricsConfig.Enabled {
 		switch metricsConfig.Provider {
@@ -57,25 +55,19 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 		}
 	}
 
-	for _, fcfg := range featureConfigs {
-		//nolint:gocritic // for the future
-		switch fcfg.Name {
-		case "ratelimit":
-			if fcfg.Enabled {
-				router.rateLimiter = ratelimit.New(fcfg.Config)
+	if routerConfig.RateLimiter.Enabled {
+		router.rateLimiter = ratelimit.New(routerConfig.RateLimiter.Config)
 
-				err := router.rateLimiter.Start()
-				if err != nil {
-					log.Fatal("failed to start ratelimit feature", zap.Error(err))
-				}
-			}
+		err := router.rateLimiter.Start()
+		if err != nil {
+			log.Fatal("failed to start ratelimit feature", zap.Error(err))
 		}
 	}
 
 	// Global middlewares.
 	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareConfigs, log)
 
-	for _, rcfg := range routeConfigs {
+	for _, rcfg := range routerConfig.Routes {
 		router.Routes = append(router.Routes, initRoute(rcfg, globalMiddlewares, globalMiddlewareIndices, log))
 	}
 

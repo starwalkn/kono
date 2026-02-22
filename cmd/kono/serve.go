@@ -35,7 +35,7 @@ func runServe() error {
 		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = "./kono.json"
+		cfgPath = "./kono.yaml"
 	}
 
 	cfg, err := kono.LoadConfig(cfgPath)

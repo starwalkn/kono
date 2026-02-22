@@ -9,7 +9,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono"
-	"github.com/starwalkn/kono/dashboard"
 )
 
 type Server struct {
@@ -18,17 +17,11 @@ type Server struct {
 }
 
 func NewServer(cfg kono.Config, log *zap.Logger) *Server {
-	if cfg.Dashboard.Enabled {
-		dashboardServer := dashboard.NewServer(&cfg, log.Named("dashboard"))
-		go dashboardServer.Start()
-	}
-
 	routerConfigSet := kono.RouterConfigSet{
-		Version:     cfg.Version,
-		Routes:      cfg.Routes,
-		Middlewares: cfg.Middlewares,
-		Features:    cfg.Features,
-		Metrics:     cfg.Server.Metrics,
+		Version:           cfg.Version,
+		Router:            cfg.Router,
+		GlobalMiddlewares: cfg.GlobalMiddlewares,
+		Metrics:           cfg.Server.Metrics,
 	}
 
 	mainRouter := kono.NewRouter(routerConfigSet, log.Named("router"))

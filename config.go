@@ -22,15 +22,13 @@ const (
 )
 
 type Config struct {
-	ConfigVersion string             `json:"config_version" yaml:"config_version" toml:"config_version" validate:"required,oneof=v1"`
-	Name          string             `json:"name" yaml:"name" toml:"name" validate:"required"`
-	Version       string             `json:"version" yaml:"version" toml:"version" validate:"required"`
-	Debug         bool               `json:"debug" yaml:"debug" toml:"debug"`
-	Server        ServerConfig       `json:"server" yaml:"server" toml:"server"`
-	Dashboard     DashboardConfig    `json:"dashboard" yaml:"dashboard" toml:"dashboard"`
-	Features      []FeatureConfig    `json:"features" yaml:"features" toml:"features"`
-	Middlewares   []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
-	Routes        []RouteConfig      `json:"routes" yaml:"routes" toml:"routes" validate:"min=1,dive"`
+	ConfigVersion     string             `json:"config_version" yaml:"config_version" toml:"config_version" validate:"required,oneof=v1"`
+	Name              string             `json:"name" yaml:"name" toml:"name" validate:"required"`
+	Version           string             `json:"version" yaml:"version" toml:"version" validate:"required"`
+	Debug             bool               `json:"debug" yaml:"debug" toml:"debug"`
+	Server            ServerConfig       `json:"server" yaml:"server" toml:"server"`
+	GlobalMiddlewares []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
+	Router            RouterConfig       `json:"router" yaml:"router" toml:"router" validate:"required"`
 }
 
 type ServerConfig struct {
@@ -53,10 +51,14 @@ type VictoriaMetricsConfig struct {
 	Interval time.Duration `json:"interval" yaml:"interval" toml:"interval"`
 }
 
-type DashboardConfig struct {
-	Enabled bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Port    int           `json:"port" yaml:"port" toml:"port"`
-	Timeout time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
+type RouterConfig struct {
+	RateLimiter RateLimiterConfig `json:"rate_limiter" yaml:"rate_limiter" toml:"rate_limiter"`
+	Routes      []RouteConfig     `json:"routes" yaml:"routes" toml:"routes" validate:"min=1,dive"`
+}
+
+type RateLimiterConfig struct {
+	Enabled bool                   `json:"enabled" yaml:"enabled" toml:"enabled"`
+	Config  map[string]interface{} `json:"config" yaml:"config" toml:"config"`
 }
 
 type RouteConfig struct {
@@ -69,14 +71,23 @@ type RouteConfig struct {
 	MaxParallelUpstreams int64              `json:"max_parallel_upstreams" yaml:"max_parallel_upstreams" toml:"max_parallel_upstreams"`
 }
 
-type AggregationConfig struct {
-	Strategy            string `json:"strategy" yaml:"strategy" toml:"strategy" validate:"required,oneof=array merge"`
-	AllowPartialResults bool   `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
+type PluginConfig struct {
+	Name   string                 `json:"name" yaml:"name" toml:"name"`
+	Path   string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
+	Config map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+}
+
+type MiddlewareConfig struct {
+	Name          string                 `json:"name" yaml:"name" toml:"name"`
+	Path          string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
+	Config        map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+	CanFailOnLoad bool                   `json:"can_fail_on_load" yaml:"can_fail_on_load" toml:"can_fail_on_load"`
+	Override      bool                   `json:"override" yaml:"override" toml:"override"`
 }
 
 type UpstreamConfig struct {
 	Name                string        `json:"name" yaml:"name" toml:"name"`
-	Hosts               []string      `json:"hosts" yaml:"hosts" toml:"hosts" validate:"required,hosts"`
+	Hosts               []string      `json:"hosts" yaml:"hosts" toml:"hosts" validate:"min=1,dive"`
 	Method              string        `json:"method" yaml:"method" toml:"method" validate:"required"`
 	Timeout             time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
 	ForwardHeaders      []string      `json:"forward_headers" yaml:"forward_headers" toml:"forward_headers"`
@@ -108,27 +119,12 @@ type CircuitBreakerConfig struct {
 }
 
 type LoadBalancerConfig struct {
-	Mode string `json:"mode" yaml:"mode" toml:"mode" validate:"required,oneof=round_robin least_conn"`
+	Mode string `json:"mode" yaml:"mode" toml:"mode"`
 }
 
-type PluginConfig struct {
-	Name   string                 `json:"name" yaml:"name" toml:"name"`
-	Path   string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
-	Config map[string]interface{} `json:"config" yaml:"config" toml:"config"`
-}
-
-type MiddlewareConfig struct {
-	Name          string                 `json:"name" yaml:"name" toml:"name"`
-	Path          string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
-	Config        map[string]interface{} `json:"config" yaml:"config" toml:"config"`
-	CanFailOnLoad bool                   `json:"can_fail_on_load" yaml:"can_fail_on_load" toml:"can_fail_on_load"`
-	Override      bool                   `json:"override" yaml:"override" toml:"override"`
-}
-
-type FeatureConfig struct {
-	Enabled bool                   `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Name    string                 `json:"name" yaml:"name" toml:"name"`
-	Config  map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+type AggregationConfig struct {
+	Strategy            string `json:"strategy" yaml:"strategy" toml:"strategy" validate:"required,oneof=array merge"`
+	AllowPartialResults bool   `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -181,14 +177,14 @@ func ensureDefaults(cfg *Config) {
 		cfg.Server.Timeout = defaultServerTimeout
 	}
 
-	for i := range cfg.Routes {
-		if cfg.Routes[i].MaxParallelUpstreams < 1 {
-			cfg.Routes[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
+	for i := range cfg.Router.Routes {
+		if cfg.Router.Routes[i].MaxParallelUpstreams < 1 {
+			cfg.Router.Routes[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
 		}
 
-		for j := range cfg.Routes[i].Upstreams {
-			if cfg.Routes[i].Upstreams[j].Timeout == 0 {
-				cfg.Routes[i].Upstreams[j].Timeout = defaultUpstreamTimeout
+		for j := range cfg.Router.Routes[i].Upstreams {
+			if cfg.Router.Routes[i].Upstreams[j].Timeout == 0 {
+				cfg.Router.Routes[i].Upstreams[j].Timeout = defaultUpstreamTimeout
 			}
 		}
 	}
