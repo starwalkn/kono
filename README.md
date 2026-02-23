@@ -64,7 +64,8 @@ docker run \
 
 ## ⚙️ Configuration
 
-⚠️ Kono only supports YAML configuration files. JSON/TOML is not supported to avoid inconsistencies and reduce complexity.
+⚠️ Kono only supports YAML configuration files. JSON/TOML is not supported to avoid inconsistencies and reduce
+complexity.
 
 It looks for configuration in:
 
@@ -83,7 +84,7 @@ gateway:
     timeout: 20s
     metrics:
       enabled: true
-      provider: victoriametrics
+      provider: prometheus
 
   routing:
     rate_limiter:
