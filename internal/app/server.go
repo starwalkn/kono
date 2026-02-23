@@ -28,7 +28,7 @@ func NewServer(cfg kono.GatewayConfig, log *zap.Logger) *Server {
 
 	mux.Handle("/__health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		w.Write([]byte("OK")) //nolint:errcheck,gosec // not important
 	}))
 
 	if cfg.Server.Metrics.Enabled {
