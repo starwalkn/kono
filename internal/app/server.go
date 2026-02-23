@@ -26,6 +26,11 @@ func NewServer(cfg kono.GatewayConfig, log *zap.Logger) *Server {
 
 	mux := http.NewServeMux()
 
+	mux.Handle("/__health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+
 	if cfg.Server.Metrics.Enabled {
 		mux.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			metrics.WritePrometheus(w, true)

@@ -20,7 +20,7 @@ const (
 )
 const (
 	builtinPluginsPath     = "/usr/local/lib/kono/plugins/"
-	builtinMiddlewaresPath = "/usr/local/lib/kono/middleware/"
+	builtinMiddlewaresPath = "/usr/local/lib/kono/middlewares/"
 )
 
 func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
