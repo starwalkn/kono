@@ -31,7 +31,7 @@ type mockDispatcher struct {
 	results []UpstreamResponse
 }
 
-func (m *mockDispatcher) dispatch(_ *Route, _ *http.Request) []UpstreamResponse {
+func (m *mockDispatcher) dispatch(_ *Flow, _ *http.Request) []UpstreamResponse {
 	return m.results
 }
 
@@ -77,7 +77,7 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:   "/test/basic/flow",
 				Method: http.MethodGet,
@@ -137,7 +137,7 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:   "/test/partial/response",
 				Method: http.MethodGet,
@@ -201,7 +201,7 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:   "/test/upstream/error",
 				Method: http.MethodGet,
@@ -250,7 +250,7 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 
 func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
 	r := &Router{
-		Routes:  nil,
+		Flows:   nil,
 		log:     zap.NewNop(),
 		metrics: metric.NewNop(),
 	}
@@ -295,7 +295,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:    "/test/with/plugins",
 				Method:  http.MethodGet,
@@ -355,7 +355,7 @@ func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:        "/test/with/middleware",
 				Method:      http.MethodGet,

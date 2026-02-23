@@ -1,11 +1,11 @@
 package kono
 
-type Route struct {
+type Flow struct {
 	Path                 string
 	Method               string
-	Upstreams            []Upstream
 	Aggregation          AggregationConfig
 	MaxParallelUpstreams int64
+	Upstreams            []Upstream
 	Plugins              []Plugin
 	Middlewares          []Middleware
 }

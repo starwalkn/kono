@@ -64,97 +64,118 @@ docker run \
 
 ## ⚙️ Configuration
 
-Kono requires a YAML configuration file.
+⚠️ Kono only supports YAML configuration files. JSON/TOML is not supported to avoid inconsistencies and reduce complexity.
 
 It looks for configuration in:
 
 1. `KONO_CONFIG` environment variable
-2. `./kono.json` (fallback)
+2. `./kono.yaml` (fallback)
 
 ### Example Configuration (v1)
 
 ```yaml
-config_version: v1
-name: Kono Gateway
-version: 0.0.1
-debug: false
+schema: v1
+debug: true
 
-server:
-  port: 7805
-  timeout: 20s
-  metrics:
-    enabled: true
-    provider: prometheus
-
-middlewares:
-  - name: recoverer
-    path: /kono/middlewares/recoverer.so
-    can_fail_on_load: false
-    config:
+gateway:
+  server:
+    port: 7805
+    timeout: 20s
+    metrics:
       enabled: true
+      provider: victoriametrics
 
-  - name: logger
-    path: /kono/middlewares/logger.so
-    can_fail_on_load: false
-    config:
+  routing:
+    rate_limiter:
       enabled: true
+      config:
+        limit: 10
+        window: 1s
+    flows:
+      - path: /api/users
+        method: GET
+        aggregation:
+          strategy: merge
+          allow_partial_results: true
+        max_parallel_upstreams: 1
+        plugins:
+          - name: snakeify
+            path: /kono/plugins/snakeify.so
+        middlewares:
+          - name: recoverer
+            path: /kono/middlewares/recoverer.so
+            config:
+              enabled: false
+          - name: logger
+            path: /kono/middlewares/logger.so
+            config:
+              enabled: false
+        upstreams:
+          - hosts: http://user-service.local/v1/users
+            method: GET
+            timeout: 3s
+            forward_query_strings: [ "*" ]
+            forward_headers: [ "X-*" ]
+            policy:
+              allowed_statuses: [ 200, 404 ]
+              require_body: true
+              map_status_codes:
+                403: 404
+              max_response_body_size: 4096
+              retry:
+                max_retries: 3
+                retry_on_statuses: [ 500, 502, 503 ]
+                backoff_delay: 1s
+              circuit_breaker:
+                enabled: true
+                max_failures: 5
+                reset_timeout: 2s
 
-router:
-  rate_limiter:
-    enabled: true
-    config:
-      limit: 10
-      window: 1s
+      - path: /api/domains
+        method: GET
+        aggregation:
+          strategy: array
+          allow_partial_results: true
+        max_parallel_upstreams: 3
+        plugins:
+          - name: camelify
+            path: /kono/plugins/camelify.so
+        middlewares:
+          - name: logger
+            path: /kono/middlewares/logger.so
+            config:
+              enabled: false
+        upstreams:
+          - hosts:
+              - http://domain-service-1.local/v1/domains
+              - http://domain-service-2.local/v1/domains
+            method: GET
+            timeout: 3s
+            forward_query_strings: [ "*" ]
+            forward_headers: [ "X-For*" ]
+            policy:
+              circuit_breaker:
+                enabled: true
+                max_failures: 5
+                reset_timeout: 2s
+              load_balancing:
+                mode: round_robin
+          - hosts:
+              - http://profile-service-1.local/v1/details
+              - http://profile-service-2.local/v1/details
+              - http://profile-service-3.local/v1/details
+            method: GET
+            timeout: 2s
+            forward_query_strings: [ "id" ]
+            forward_headers: [ "X-For" ]
+            policy:
+              circuit_breaker:
+                enabled: true
+                max_failures: 5
+                reset_timeout: 2s
+              load_balancing:
+                mode: least_conns
 
-  routes:
-    - path: /api/users
-      method: GET
-      aggregation:
-        strategy: merge
-        allow_partial_results: true
-      max_parallel_upstreams: 1
-      upstreams:
-        - hosts:
-            - http://user-service.local/v1/users
-          method: GET
-          timeout: 3s
-          forward_query_strings: [ "*" ]
-          forward_headers: [ "X-*" ]
-          policy:
-            allowed_statuses: [ 200, 404 ]
-            retry:
-              max_retries: 3
-              retry_on_statuses: [ 500, 502, 503 ]
-              backoff_delay: 1s
-            circuit_breaker:
-              enabled: true
-              max_failures: 5
-              reset_timeout: 2s
-      plugins:
-        - name: snakeify
-          path: /kono/plugins/snakeify.so
-
-    - path: /api/domains
-      method: GET
-      aggregation:
-        strategy: array
-        allow_partial_results: true
-      max_parallel_upstreams: 3
-      upstreams:
-        - hosts:
-            - http://domain-service.local/v1/domains
-          method: GET
-          timeout: 3s
-          forward_query_strings: [ "*" ]
-          forward_headers: [ "X-For*" ]
-          policy:
-            circuit_breaker:
-              enabled: true
-              max_failures: 5
-              reset_timeout: 2s
-      plugins:
-        - name: snakeify
-          path: /kono/plugins/snakeify.so
 ```
 
 ---

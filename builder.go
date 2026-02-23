@@ -24,24 +24,20 @@ func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
 		aggregator: &defaultAggregator{
 			log: log.Named("aggregator"),
 		},
-		Routes:      make([]Route, 0, routesCount),
+		Flows:       make([]Flow, 0, routesCount),
 		log:         log,
 		metrics:     metrics,
 		rateLimiter: nil,
 	}
 }
 
-func initGlobalMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) (map[string]int, []Middleware) {
-	globalMiddlewareIndices := make(map[string]int)
-	globalMiddlewares := make([]Middleware, 0, len(cfgs))
+func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
+	middlewares := make([]Middleware, 0, len(cfgs))
 
-	for i, cfg := range cfgs {
+	for _, cfg := range cfgs {
 		soMiddleware := loadMiddleware(cfg.Path, cfg.Config, log)
 		if soMiddleware == nil {
-			log.Error(
-				"cannot load middleware from .so",
-				zap.String("name", cfg.Name),
-			)
+			log.Error("cannot load middleware from .so", zap.String("name", cfg.Name))
 
 			if !cfg.CanFailOnLoad {
 				panic("cannot load middleware from .so")
@@ -50,11 +46,12 @@ func initGlobalMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) (map[string
 			continue
 		}
 
-		globalMiddlewares = append(globalMiddlewares, soMiddleware)
-		globalMiddlewareIndices[soMiddleware.Name()] = i
+		log.Info("middleware initialized", zap.String("name", soMiddleware.Name()))
+
+		middlewares = append(middlewares, soMiddleware)
 	}
 
-	return globalMiddlewareIndices, globalMiddlewares
+	return middlewares
 }
 
 func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
@@ -79,10 +76,7 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 			continue
 		}
 
-		log.Info(
-			"plugin initialized",
-			zap.Any("name", soPlugin.Info()),
-		)
+		log.Info("plugin initialized", zap.Any("name", soPlugin.Info()))
 
 		plugins = append(plugins, soPlugin)
 	}
@@ -118,8 +112,8 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 				MaxFailures:  cfg.Policy.CircuitBreakerConfig.MaxFailures,
 				ResetTimeout: cfg.Policy.CircuitBreakerConfig.ResetTimeout,
 			},
-			LoadBalancer: LoadBalancerPolicy{
-				Mode: cfg.Policy.LoadBalancerConfig.Mode,
+			LoadBalancing: LoadBalancingPolicy{
+				Mode: cfg.Policy.LoadBalancingConfig.Mode,
 			},
 		}
 
@@ -134,15 +128,15 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 		}
 
 		upstream := &httpUpstream{
-			id:                  uuid.NewString(),
-			name:                name,
-			hosts:               cfg.Hosts,
-			method:              cfg.Method,
-			timeout:             cfg.Timeout,
-			forwardHeaders:      cfg.ForwardHeaders,
-			forwardQueryStrings: cfg.ForwardQueryStrings,
-			policy:              policy,
-			activeConnections:   make([]int64, len(cfg.Hosts)),
+			id:                uuid.NewString(),
+			name:              name,
+			hosts:             cfg.Hosts,
+			method:            cfg.Method,
+			timeout:           cfg.Timeout,
+			forwardHeaders:    cfg.ForwardHeaders,
+			forwardQueries:    cfg.ForwardQueries,
+			policy:            policy,
+			activeConnections: make([]int64, len(cfg.Hosts)),
 			client: &http.Client{
 				Transport: transport,
 			},
@@ -173,45 +167,14 @@ func makeUpstreamName(method string, hosts []string) string {
 	return sb.String()
 }
 
-func initRoute(cfg RouteConfig, globalMiddlewares []Middleware, globalMiddlewareIndices map[string]int, log *zap.Logger) Route {
-	var (
-		globalMiddlewaresCopy = append([]Middleware(nil), globalMiddlewares...)
-		localMiddlewares      = make([]Middleware, 0, len(cfg.Middlewares))
-	)
-
-	for _, mcfg := range cfg.Middlewares {
-		soMiddleware := loadMiddleware(mcfg.Path, mcfg.Config, log)
-		if soMiddleware == nil {
-			log.Error("cannot load middleware from .so", zap.String("name", mcfg.Name))
-
-			if !mcfg.CanFailOnLoad {
-				panic("cannot load middleware from .so")
-			}
-
-			continue
-		}
-
-		log.Info("middleware initialized", zap.String("name", soMiddleware.Name()), zap.String("route", cfg.Method+" "+cfg.Path))
-
-		if mcfg.Override {
-			if idx, ok := globalMiddlewareIndices[soMiddleware.Name()]; ok {
-				globalMiddlewaresCopy[idx] = soMiddleware
-				continue
-			}
-		}
-
-		localMiddlewares = append(localMiddlewares, soMiddleware)
-	}
-
-	middlewares := append(globalMiddlewaresCopy, localMiddlewares...) //nolint:gocritic // because i am retard
-
-	return Route{
+func initRoute(cfg FlowConfig, log *zap.Logger) Flow {
+	return Flow{
 		Path:                 cfg.Path,
 		Method:               cfg.Method,
-		Upstreams:            initUpstreams(cfg.Upstreams),
 		Aggregation:          cfg.Aggregation,
 		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
+		Upstreams:            initUpstreams(cfg.Upstreams),
 		Plugins:              initPlugins(cfg.Plugins, log),
-		Middlewares:          middlewares,
+		Middlewares:          initMiddlewares(cfg.Middlewares, log),
 	}
 }

@@ -61,14 +61,14 @@ const (
 
 // httpUpstream is an implementation of Upstream interface.
 type httpUpstream struct {
-	id                  string // UUID for internal usage.
-	name                string // For logs.
-	hosts               []string
-	method              string
-	timeout             time.Duration
-	forwardHeaders      []string
-	forwardQueryStrings []string
-	policy              Policy
+	id             string // UUID for internal usage.
+	name           string // For logs.
+	hosts          []string
+	method         string
+	timeout        time.Duration
+	forwardHeaders []string
+	forwardQueries []string
+	policy         Policy
 
 	currentHostIdx    int64   // Round Robin.
 	activeConnections []int64 // Least Connections.
@@ -155,7 +155,7 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 
 	selectedHost := u.selectHost()
 
-	if u.policy.LoadBalancer.Mode == LBModeLeastConns {
+	if u.policy.LoadBalancing.Mode == LBModeLeastConns {
 		atomic.AddInt64(&u.activeConnections[selectedHost], 1)
 		defer atomic.AddInt64(&u.activeConnections[selectedHost], -1)
 	}
@@ -254,7 +254,7 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 		return nil, err
 	}
 
-	u.resolveQueryStrings(target, original)
+	u.resolveQueries(target, original)
 	u.resolveHeaders(target, original)
 
 	return target, nil
@@ -268,7 +268,7 @@ func (u *httpUpstream) selectHost() int64 {
 
 	var selectedHost int64
 
-	switch u.policy.LoadBalancer.Mode {
+	switch u.policy.LoadBalancing.Mode {
 	case LBModeRoundRobin:
 		idx := atomic.AddInt64(&u.currentHostIdx, 1)
 		selectedHost = idx % int64(len(u.hosts))
@@ -297,10 +297,10 @@ func (u *httpUpstream) selectHost() int64 {
 	return selectedHost
 }
 
-func (u *httpUpstream) resolveQueryStrings(target, original *http.Request) {
+func (u *httpUpstream) resolveQueries(target, original *http.Request) {
 	q := target.URL.Query()
 
-	for _, fqs := range u.forwardQueryStrings {
+	for _, fqs := range u.forwardQueries {
 		if fqs == "*" {
 			q = original.URL.Query()
 			break

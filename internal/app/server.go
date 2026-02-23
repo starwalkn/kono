@@ -16,15 +16,13 @@ type Server struct {
 	log  *zap.Logger
 }
 
-func NewServer(cfg kono.Config, log *zap.Logger) *Server {
-	routerConfigSet := kono.RouterConfigSet{
-		Version:           cfg.Version,
-		Router:            cfg.Router,
-		GlobalMiddlewares: cfg.GlobalMiddlewares,
-		Metrics:           cfg.Server.Metrics,
+func NewServer(cfg kono.GatewayConfig, log *zap.Logger) *Server {
+	routingConfigSet := kono.RoutingConfigSet{
+		Routing: cfg.Routing,
+		Metrics: cfg.Server.Metrics,
 	}
 
-	mainRouter := kono.NewRouter(routerConfigSet, log.Named("router"))
+	mainRouter := kono.NewRouter(routingConfigSet, log.Named("router"))
 
 	mux := http.NewServeMux()
 

@@ -12,7 +12,7 @@ type Policy struct {
 
 	RetryPolicy    RetryPolicy
 	CircuitBreaker CircuitBreakerPolicy
-	LoadBalancer   LoadBalancerPolicy
+	LoadBalancing  LoadBalancingPolicy
 }
 
 // RetryPolicy specifies retry behavior for an upstream, including max retries, which statuses trigger retries,
@@ -36,6 +36,6 @@ const (
 	LBModeLeastConns = "least_conns"
 )
 
-type LoadBalancerPolicy struct {
+type LoadBalancingPolicy struct {
 	Mode string // Round Robin, Least Connections, etc...
 }

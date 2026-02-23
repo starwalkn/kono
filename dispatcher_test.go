@@ -40,7 +40,7 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{hosts: []string{upstreamA.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
 			&httpUpstream{hosts: []string{upstreamB.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
@@ -76,15 +76,15 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				hosts:               []string{upstreamA.URL},
-				forwardQueryStrings: []string{"foo"},
-				forwardHeaders:      []string{"X-Test"},
-				timeout:             500 * time.Millisecond,
-				log:                 zap.NewNop(),
-				client:              http.DefaultClient,
+				hosts:          []string{upstreamA.URL},
+				forwardQueries: []string{"foo"},
+				forwardHeaders: []string{"X-Test"},
+				timeout:        500 * time.Millisecond,
+				log:            zap.NewNop(),
+				client:         http.DefaultClient,
 			},
 		},
 		MaxParallelUpstreams: maxParallelUpstreams,
@@ -112,7 +112,7 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -145,7 +145,7 @@ func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -182,7 +182,7 @@ func TestDispatcher_Dispatch_MapStatusCodesPolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -234,7 +234,7 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -286,7 +286,7 @@ func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -349,7 +349,7 @@ func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -403,7 +403,7 @@ func TestDispatcher_Dispatch_CircuitBreakerPolicy(t *testing.T) {
 
 	cb := circuitbreaker.New(maxFailures, 100*time.Millisecond)
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -472,7 +472,7 @@ func TestDispatcher_Dispatch_LoadBalancerPolicy_RoundRobin(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL, upstreamB.URL},
@@ -481,7 +481,7 @@ func TestDispatcher_Dispatch_LoadBalancerPolicy_RoundRobin(t *testing.T) {
 				log:     zap.NewNop(),
 				client:  http.DefaultClient,
 				policy: Policy{
-					LoadBalancer: LoadBalancerPolicy{Mode: LBModeRoundRobin},
+					LoadBalancing: LoadBalancingPolicy{Mode: LBModeRoundRobin},
 				},
 			},
 		},
@@ -521,7 +521,7 @@ func TestDispatcher_Dispatch_LoadBalancerPolicy_LeastConns(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL, upstreamB.URL},
@@ -530,7 +530,7 @@ func TestDispatcher_Dispatch_LoadBalancerPolicy_LeastConns(t *testing.T) {
 				log:     zap.NewNop(),
 				client:  http.DefaultClient,
 				policy: Policy{
-					LoadBalancer: LoadBalancerPolicy{Mode: LBModeLeastConns},
+					LoadBalancing: LoadBalancingPolicy{Mode: LBModeLeastConns},
 				},
 				activeConnections: make([]int64, 2),
 			},

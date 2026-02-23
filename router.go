@@ -22,7 +22,7 @@ import (
 type Router struct {
 	dispatcher dispatcher
 	aggregator aggregator
-	Routes     []Route
+	Flows      []Flow
 
 	log     *zap.Logger
 	metrics metric.Metrics
@@ -30,21 +30,18 @@ type Router struct {
 	rateLimiter *ratelimit.RateLimit
 }
 
-type RouterConfigSet struct {
-	Version           string
-	Router            RouterConfig
-	GlobalMiddlewares []MiddlewareConfig
-	Metrics           MetricsConfig
+type RoutingConfigSet struct {
+	Routing RoutingConfig
+	Metrics MetricsConfig
 }
 
-func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
+func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
 	var (
-		routerConfig            = routerConfigSet.Router
-		globalMiddlewareConfigs = routerConfigSet.GlobalMiddlewares
-		metricsConfig           = routerConfigSet.Metrics
+		routingConfig = routingConfigSet.Routing
+		metricsConfig = routingConfigSet.Metrics
 	)
 
-	router := initMinimalRouter(len(routerConfig.Routes), log)
+	router := initMinimalRouter(len(routingConfig.Flows), log)
 
 	if metricsConfig.Enabled {
 		switch metricsConfig.Provider {
@@ -55,8 +52,8 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 		}
 	}
 
-	if routerConfig.RateLimiter.Enabled {
-		router.rateLimiter = ratelimit.New(routerConfig.RateLimiter.Config)
+	if routingConfig.RateLimiter.Enabled {
+		router.rateLimiter = ratelimit.New(routingConfig.RateLimiter.Config)
 
 		err := router.rateLimiter.Start()
 		if err != nil {
@@ -64,11 +61,8 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 		}
 	}
 
-	// Global middlewares.
-	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareConfigs, log)
-
-	for _, rcfg := range routerConfig.Routes {
-		router.Routes = append(router.Routes, initRoute(rcfg, globalMiddlewares, globalMiddlewareIndices, log))
+	for _, rcfg := range routingConfig.Flows {
+		router.Flows = append(router.Flows, initRoute(rcfg, log))
 	}
 
 	return router
@@ -79,7 +73,7 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 // The processing steps are:
 //
 // 1. Rate limiting (if enabled) – rejects requests exceeding allowed limits.
-// 2. Route matching – finds a Route that matches the request method and path.
+// 2. Flow matching – finds a Flow that matches the request method and path.
 //   - If no route is found, responds with 404.
 //
 // 3. Middleware execution – wraps the route handler with all configured middlewares in reverse order.
@@ -105,10 +99,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
 
-	matchedRoute := r.match(req)
-	if matchedRoute == nil {
-		r.log.Error("no route matched", zap.String("request_uri", req.URL.RequestURI()))
-		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedRoute)
+	matchedFlow := r.match(req)
+	if matchedFlow == nil {
+		r.log.Error("no flow matched", zap.String("request_uri", req.URL.RequestURI()))
+		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedFlow)
 
 		http.NotFound(w, req)
 
@@ -122,9 +116,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	var flowHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
-		defer r.metrics.UpdateRequestsDuration(matchedRoute.Path, matchedRoute.Method, start)
+		defer r.metrics.UpdateRequestsDuration(matchedFlow.Path, matchedFlow.Method, start)
 
 		// Kono internal context
 		tctx := newContext(req)
@@ -132,7 +126,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		requestID := getOrCreateRequestID(req)
 
 		// Request-phase plugins
-		for _, p := range matchedRoute.Plugins {
+		for _, p := range matchedFlow.Plugins {
 			if p.Type() != PluginTypeRequest {
 				continue
 			}
@@ -148,7 +142,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		// Upstream dispatch
-		responses := r.dispatcher.dispatch(matchedRoute, req)
+		responses := r.dispatcher.dispatch(matchedFlow, req)
 		if responses == nil {
 			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
@@ -174,10 +168,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.log.Debug("dispatched responses", zap.Any("responses", responses))
 
 		// Aggregate upstream responses
-		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
+		aggregated := r.aggregator.aggregate(responses, matchedFlow.Aggregation)
 
 		r.log.Debug("aggregated responses",
-			zap.String("strategy", matchedRoute.Aggregation.Strategy),
+			zap.String("strategy", matchedFlow.Aggregation.Strategy),
 			zap.Any("aggregated", aggregated),
 		)
 
@@ -217,7 +211,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		tctx.SetResponse(resp)
 
 		// Response-phase plugins
-		for _, p := range matchedRoute.Plugins {
+		for _, p := range matchedFlow.Plugins {
 			if p.Type() != PluginTypeResponse {
 				continue
 			}
@@ -232,30 +226,30 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		r.metrics.IncResponsesTotal(matchedRoute.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
+		r.metrics.IncResponsesTotal(matchedFlow.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
 
 		// Write final output.
 		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse
 	})
 
-	for i := len(matchedRoute.Middlewares) - 1; i >= 0; i-- {
-		routeHandler = matchedRoute.Middlewares[i].Handler(routeHandler)
+	for i := len(matchedFlow.Middlewares) - 1; i >= 0; i-- {
+		flowHandler = matchedFlow.Middlewares[i].Handler(flowHandler)
 	}
 
-	routeHandler.ServeHTTP(w, req)
+	flowHandler.ServeHTTP(w, req)
 }
 
-// match matches the given request to a route.
-func (r *Router) match(req *http.Request) *Route {
-	for i := range r.Routes {
-		route := &r.Routes[i]
+// match matches the given request to a flow.
+func (r *Router) match(req *http.Request) *Flow {
+	for i := range r.Flows {
+		flow := &r.Flows[i]
 
-		if route.Method != "" && !strings.EqualFold(route.Method, req.Method) {
+		if flow.Method != "" && !strings.EqualFold(flow.Method, req.Method) {
 			continue
 		}
 
-		if route.Path != "" && req.URL.Path == route.Path {
-			return route
+		if flow.Path != "" && req.URL.Path == flow.Path {
+			return flow
 		}
 	}
 

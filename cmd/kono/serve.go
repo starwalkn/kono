@@ -48,7 +48,7 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	server := app.NewServer(cfg, log)
+	server := app.NewServer(cfg.Gateway, log)
 
 	go func() {
 		if err = server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
