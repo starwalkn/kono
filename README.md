@@ -44,6 +44,14 @@ Available CLI commands:
 ```bash
 kono serve
 kono validate
+kono viz
+```
+
+Instead of defining the `KONO_CONFIG` environment variable, you can also explicitly 
+pass the path to the configuration file using the `--config` flag:
+
+```bash
+kono --config /etc/kono/config.yaml serve
 ```
 
 ---
@@ -70,7 +78,7 @@ complexity.
 It looks for configuration in:
 
 1. `KONO_CONFIG` environment variable
-2. `./kono.yaml` (fallback)
+2. `/etc/kono/config.yaml` (if `KONO_CONFIG` is empty)
 
 ### Example Configuration (v1)
 
@@ -112,10 +120,11 @@ gateway:
             config:
               enabled: false
         upstreams:
-          - hosts: http://user-service.local/v1/users
+          - hosts: http://user-service.local
+            path: v1/users
             method: GET
             timeout: 3s
-            forward_query_strings: [ "*" ]
+            forward_queries: [ "*" ]
             forward_headers: [ "X-*" ]
             policy:
               allowed_statuses: [ 200, 404 ]
@@ -148,11 +157,12 @@ gateway:
               enabled: false
         upstreams:
           - hosts:
-              - http://domain-service-1.local/v1/domains
-              - http://domain-service-2.local/v1/domains
+              - http://domain-service-1.local
+              - http://domain-service-2.local
+            path: v1/domains
             method: GET
             timeout: 3s
-            forward_query_strings: [ "*" ]
+            forward_queries: [ "*" ]
             forward_headers: [ "X-For*" ]
             policy:
               circuit_breaker:
@@ -162,12 +172,13 @@ gateway:
               load_balancing:
                 mode: round_robin
           - hosts:
-              - http://profile-service-1.local/v1/details
-              - http://profile-service-2.local/v1/details
-              - http://profile-service-3.local/v1/details
+              - http://profile-service-1.local
+              - http://profile-service-2.local
+              - http://profile-service-3.local
+            path: v1/details
             method: GET
             timeout: 2s
-            forward_query_strings: [ "id" ]
+            forward_queries: [ "id" ]
             forward_headers: [ "X-For" ]
             policy:
               circuit_breaker:

@@ -19,7 +19,7 @@ var vizCmd = &cobra.Command{
 			cfgPath = os.Getenv("KONO_CONFIG")
 		}
 		if cfgPath == "" {
-			cfgPath = "./kono.yaml"
+			cfgPath = fallbackCfgPath
 		}
 
 		cfg, err := kono.LoadConfig(cfgPath)
@@ -59,7 +59,16 @@ func VisualizeFlowsTree(flows []kono.FlowConfig) error {
 				pluginNames = append(pluginNames, p.Name)
 			}
 
-			fmt.Println("│   └── \u001B[1;35mplugins: [" + colorMagenta + strings.Join(pluginNames, ", ") + "]" + colorReset)
+			str := fmt.Sprintf(
+				"│   └── %splugins%s: [%s%s%s]",
+				colorMagenta,
+				colorReset,
+				colorMagenta,
+				strings.Join(pluginNames, ", "),
+				colorReset,
+			)
+
+			fmt.Println(str)
 		}
 
 		if len(f.Middlewares) > 0 {
@@ -68,7 +77,16 @@ func VisualizeFlowsTree(flows []kono.FlowConfig) error {
 				mwNames = append(mwNames, m.Name)
 			}
 
-			fmt.Println("│   └── \u001B[1;36mmiddlewares: [" + colorCyan + strings.Join(mwNames, ", ") + "]" + colorReset)
+			str := fmt.Sprintf(
+				"│   └── %smiddlewares%s: [%s%s%s]",
+				colorMagenta,
+				colorReset,
+				colorMagenta,
+				strings.Join(mwNames, ", "),
+				colorReset,
+			)
+
+			fmt.Println(str)
 		}
 
 		for ui, u := range f.Upstreams {
@@ -82,6 +100,7 @@ func VisualizeFlowsTree(flows []kono.FlowConfig) error {
 				upLabel = "upstream"
 			}
 
+			fmt.Println(upPrefix + colorBlue + "path: " + u.Method + " " + u.Path + colorReset)
 			fmt.Println(upPrefix + colorGreen + upLabel + colorReset)
 
 			for hi, host := range u.Hosts {

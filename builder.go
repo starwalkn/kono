@@ -1,6 +1,7 @@
 package kono
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,6 +12,15 @@ import (
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
 	"github.com/starwalkn/kono/internal/metric"
+)
+
+const (
+	sourceBuiltin = "builtin"
+	sourceFile    = "file"
+)
+const (
+	builtinPluginsPath     = "/usr/local/lib/kono/plugins/"
+	builtinMiddlewaresPath = "/usr/local/lib/kono/middleware/"
 )
 
 func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
@@ -35,15 +45,38 @@ func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
 	middlewares := make([]Middleware, 0, len(cfgs))
 
 	for _, cfg := range cfgs {
-		soMiddleware := loadMiddleware(cfg.Path, cfg.Config, log)
-		if soMiddleware == nil {
-			log.Error("cannot load middleware from .so", zap.String("name", cfg.Name))
+		cfn := func(middleware Middleware) bool {
+			return middleware.Name() == cfg.Name
+		}
 
-			if !cfg.CanFailOnLoad {
-				panic("cannot load middleware from .so")
+		if slices.ContainsFunc(middlewares, cfn) {
+			continue
+		}
+
+		var soPath string
+
+		switch cfg.Source {
+		case sourceBuiltin:
+			soPath = builtinMiddlewaresPath + cfg.Name + ".so"
+		case sourceFile:
+			pathCopy := cfg.Path
+			if !strings.HasSuffix(cfg.Path, "/") {
+				pathCopy = cfg.Path + "/"
 			}
 
-			continue
+			soPath = pathCopy + cfg.Name + ".so"
+		default:
+			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
+		}
+
+		soMiddleware := loadMiddleware(soPath, cfg.Config, log)
+		if soMiddleware == nil {
+			log.Error("cannot load middleware",
+				zap.String("name", cfg.Name),
+				zap.String("path", soPath),
+			)
+
+			panic(fmt.Sprintf("cannot load middleware from path '%s'", soPath))
 		}
 
 		log.Info("middleware initialized", zap.String("name", soMiddleware.Name()))
@@ -66,14 +99,31 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 			continue
 		}
 
-		soPlugin := loadPlugin(cfg.Path, cfg.Config, log)
+		var soPath string
+
+		switch cfg.Source {
+		case sourceBuiltin:
+			soPath = builtinPluginsPath + cfg.Name + ".so"
+		case sourceFile:
+			pathCopy := cfg.Path
+			if !strings.HasSuffix(cfg.Path, "/") {
+				pathCopy = cfg.Path + "/"
+			}
+
+			soPath = pathCopy + cfg.Name + ".so"
+		default:
+			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
+		}
+
+		soPlugin := loadPlugin(soPath, cfg.Config, log)
 		if soPlugin == nil {
 			log.Error(
-				"cannot load plugin from .so",
+				"cannot load plugin",
 				zap.String("name", cfg.Name),
-				zap.String("path", cfg.Path),
+				zap.String("path", soPath),
 			)
-			continue
+
+			panic(fmt.Sprintf("cannot load plugin from path '%s'", soPath))
 		}
 
 		log.Info("plugin initialized", zap.Any("name", soPlugin.Info()))
@@ -131,6 +181,7 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 			id:                uuid.NewString(),
 			name:              name,
 			hosts:             cfg.Hosts,
+			path:              cfg.Path,
 			method:            cfg.Method,
 			timeout:           cfg.Timeout,
 			forwardHeaders:    cfg.ForwardHeaders,

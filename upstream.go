@@ -64,6 +64,7 @@ type httpUpstream struct {
 	id             string // UUID for internal usage.
 	name           string // For logs.
 	hosts          []string
+	path           string
 	method         string
 	timeout        time.Duration
 	forwardHeaders []string
@@ -238,18 +239,27 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 }
 
 func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte, targetHost string) (*http.Request, error) {
+	var hostPath string
+
+	path := strings.TrimPrefix(u.path, "/")
+	if strings.HasSuffix(targetHost, "/") {
+		hostPath = targetHost + path
+	} else {
+		hostPath = targetHost + "/" + path
+	}
+
 	method := u.method
 	if method == "" {
-		// Fallback method.
+		// Fallback method
 		method = original.Method
 	}
 
-	// Send request body only for body-acceptable methods requests.
+	// Send request body only for body-acceptable methods requests
 	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
 		originalBody = nil
 	}
 
-	target, err := http.NewRequestWithContext(ctx, method, targetHost, bytes.NewReader(originalBody))
+	target, err := http.NewRequestWithContext(ctx, method, hostPath, bytes.NewReader(originalBody))
 	if err != nil {
 		return nil, err
 	}

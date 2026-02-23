@@ -65,8 +65,8 @@ type FlowConfig struct {
 	Aggregation          AggregationConfig  `yaml:"aggregation" validate:"required"`
 	MaxParallelUpstreams int64              `yaml:"max_parallel_upstreams"`
 	Upstreams            []UpstreamConfig   `yaml:"upstreams" validate:"required,min=1,dive,required"`
-	Plugins              []PluginConfig     `yaml:"plugins" validate:"omitempty"`
-	Middlewares          []MiddlewareConfig `yaml:"middlewares" validate:"omitempty"`
+	Plugins              []PluginConfig     `yaml:"plugins" validate:"omitempty,dive"`
+	Middlewares          []MiddlewareConfig `yaml:"middlewares" validate:"omitempty,dive"`
 }
 
 type AggregationConfig struct {
@@ -77,6 +77,7 @@ type AggregationConfig struct {
 type UpstreamConfig struct {
 	Name           string        `yaml:"name"`
 	Hosts          AddrList      `yaml:"hosts" validate:"min=1,dive"`
+	Path           string        `yaml:"path"`
 	Method         string        `yaml:"method" validate:"required"`
 	Timeout        time.Duration `yaml:"timeout"`
 	ForwardHeaders []string      `yaml:"forward_headers"`
@@ -86,15 +87,16 @@ type UpstreamConfig struct {
 
 type PluginConfig struct {
 	Name   string                 `yaml:"name" validate:"required"`
-	Path   string                 `yaml:"path" validate:"required"`
+	Source string                 `yaml:"source" validate:"required,oneof=builtin file"`
+	Path   string                 `yaml:"path" validate:"required_if=Source file"`
 	Config map[string]interface{} `yaml:"config"`
 }
 
 type MiddlewareConfig struct {
-	Name          string                 `yaml:"name" validate:"required"`
-	Path          string                 `yaml:"path" validate:"required"`
-	Config        map[string]interface{} `yaml:"config"`
-	CanFailOnLoad bool                   `yaml:"can_fail_on_load"`
+	Name   string                 `yaml:"name" validate:"required"`
+	Source string                 `yaml:"source" validate:"required,oneof=builtin file"`
+	Path   string                 `yaml:"path" validate:"required_if=Source file,omitempty"`
+	Config map[string]interface{} `yaml:"config"`
 }
 
 type PolicyConfig struct {
@@ -176,7 +178,7 @@ func LoadConfig(path string) (Config, error) {
 	})
 
 	if err = v.Struct(&cfg); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: %w", formatValidationError(err))
+		return Config{}, fmt.Errorf("invalid configuration: \n%w", formatValidationError(err))
 	}
 
 	return cfg, nil
@@ -211,10 +213,10 @@ func formatValidationError(err error) error {
 	var messages []string
 
 	for _, fe := range ves {
-		path := strings.TrimPrefix(fe.Namespace(), "GatewayConfig.")
+		path := strings.TrimPrefix(fe.Namespace(), "Config.")
 
 		messages = append(messages, fmt.Sprintf(
-			"%s: %s",
+			"  %s: %s",
 			path,
 			humanMessage(fe),
 		))
@@ -237,6 +239,12 @@ func humanMessage(fe validator.FieldError) string {
 	case "hosts":
 		return "must be a valid URL"
 
+	case "required_if":
+		if fe.Field() == "path" {
+			return "is required when source is 'file'"
+		}
+
+		return fe.Error()
 	default:
 		return fmt.Sprintf("validation failed on '%s'", fe.Tag())
 	}

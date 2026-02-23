@@ -4,7 +4,7 @@ FROM golang:1.25.4-bookworm AS builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download && go mod verify
 
 COPY . .
 
@@ -18,12 +18,14 @@ FROM debian:12-slim AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /app/.bin/kono /bin/kono
-COPY --from=builder /app/build/plugins /kono/plugins
-COPY --from=builder /app/build/middlewares /kono/middlewares
+COPY --from=builder /app/.bin/kono /usr/local/bin/kono
+
+COPY --from=builder /app/build/plugins /usr/local/lib/kono/plugins
+COPY --from=builder /app/build/middlewares /usr/local/lib/kono/middlewares
 
 EXPOSE 7805/tcp
 
 STOPSIGNAL SIGTERM
 
-CMD ["/bin/kono", "serve"]
+ENTRYPOINT ["kono"]
+CMD ["serve"]

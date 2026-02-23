@@ -6,6 +6,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const fallbackCfgPath = "/etc/kono/config.yaml"
+
 var cfgPath string
 
 var rootCmd = &cobra.Command{

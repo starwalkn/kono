@@ -78,7 +78,6 @@ linters:
     - errorlint # finds code that will cause problems with the error wrapping scheme introduced in Go 1.13
     - exptostd # detects functions from golang.org/x/exp/ that can be replaced by std functions
     - fatcontext # detects nested contexts in loops
-    - forbidigo # forbids identifiers
     - funcorder # checks the order of functions, methods, and constructors
     - funlen # tool for detection of long functions
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
@@ -131,6 +130,7 @@ linters:
     - whitespace # detects leading and trailing whitespace
 
     ## you may want to enable
+    #- forbidigo # forbids identifiers
     #- revive # fast, configurable, extensible, flexible, and beautiful linter for Go, drop-in replacement of golint
     #- errcheck # checking for unchecked errors, these unchecked errors can be critical bugs in some cases
     #- gochecknoinits # checks that no init functions are present in Go code
@@ -349,7 +349,7 @@ linters:
     nolintlint:
       # Exclude following linters from requiring an explanation.
       # Default: []
-      allow-no-explanation: [funlen, gocognit, golines]
+      allow-no-explanation: [ funlen, gocognit, golines ]
       # Enable to require an explanation of nonzero length after each nolint directive.
       # Default: false
       require-explanation: true
@@ -426,19 +426,19 @@ linters:
     # Excluding configuration per-path, per-linter, per-text and per-source.
     rules:
       - source: "TODO"
-        linters: [godot]
+        linters: [ godot ]
       - text: "should have a package comment"
-        linters: [revive]
+        linters: [ revive ]
       - text: "omit type string from declaration"
-        linters: [revive, staticcheck]
+        linters: [ revive, staticcheck ]
       - text: 'exported \S+ \S+ should have comment( \(or a comment on this block\))? or be unexported'
-        linters: [revive]
+        linters: [ revive ]
       - text: 'package comment should be of the form ".+"'
         source: "// ?(nolint|TODO)"
-        linters: [revive]
+        linters: [ revive ]
       - text: 'comment on exported \S+ \S+ should be of the form ".+"'
         source: "// ?(nolint|TODO)"
-        linters: [revive, staticcheck]
+        linters: [ revive, staticcheck ]
       - path: '_test\.go'
         linters:
           - bodyclose

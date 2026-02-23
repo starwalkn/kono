@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -17,11 +17,12 @@ var validateCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, _ []string) {
 		err := runValidate()
 		if err != nil {
-			log.Println(err)
+			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		}
 
-		log.Println("configuration file is valid, you can start the server")
+		fmt.Println("OK")
+		os.Exit(1)
 	},
 }
 
@@ -34,7 +35,7 @@ func runValidate() error {
 		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = "./kono.yaml"
+		cfgPath = fallbackCfgPath
 	}
 
 	_, err := kono.LoadConfig(cfgPath)
