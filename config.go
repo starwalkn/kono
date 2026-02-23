@@ -22,15 +22,13 @@ const (
 )
 
 type Config struct {
-	ConfigVersion string             `json:"config_version" yaml:"config_version" toml:"config_version" validate:"required,oneof=v1"`
-	Name          string             `json:"name" yaml:"name" toml:"name" validate:"required"`
-	Version       string             `json:"version" yaml:"version" toml:"version" validate:"required"`
-	Debug         bool               `json:"debug" yaml:"debug" toml:"debug"`
-	Server        ServerConfig       `json:"server" yaml:"server" toml:"server"`
-	Dashboard     DashboardConfig    `json:"dashboard" yaml:"dashboard" toml:"dashboard"`
-	Features      []FeatureConfig    `json:"features" yaml:"features" toml:"features"`
-	Middlewares   []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
-	Routes        []RouteConfig      `json:"routes" yaml:"routes" toml:"routes" validate:"min=1,dive"`
+	ConfigVersion     string             `json:"config_version" yaml:"config_version" toml:"config_version" validate:"required,oneof=v1"`
+	Name              string             `json:"name" yaml:"name" toml:"name" validate:"required"`
+	Version           string             `json:"version" yaml:"version" toml:"version" validate:"required"`
+	Debug             bool               `json:"debug" yaml:"debug" toml:"debug"`
+	Server            ServerConfig       `json:"server" yaml:"server" toml:"server"`
+	GlobalMiddlewares []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
+	Router            RouterConfig       `json:"router" yaml:"router" toml:"router" validate:"required"`
 }
 
 type ServerConfig struct {
@@ -53,10 +51,14 @@ type VictoriaMetricsConfig struct {
 	Interval time.Duration `json:"interval" yaml:"interval" toml:"interval"`
 }
 
-type DashboardConfig struct {
-	Enabled bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Port    int           `json:"port" yaml:"port" toml:"port"`
-	Timeout time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
+type RouterConfig struct {
+	RateLimiter RateLimiterConfig `json:"rate_limiter" yaml:"rate_limiter" toml:"rate_limiter"`
+	Routes      []RouteConfig     `json:"routes" yaml:"routes" toml:"routes" validate:"min=1,dive"`
+}
+
+type RateLimiterConfig struct {
+	Enabled bool                   `json:"enabled" yaml:"enabled" toml:"enabled"`
+	Config  map[string]interface{} `json:"config" yaml:"config" toml:"config"`
 }
 
 type RouteConfig struct {
@@ -67,43 +69,6 @@ type RouteConfig struct {
 	Upstreams            []UpstreamConfig   `json:"upstreams" yaml:"upstreams" toml:"upstreams" validate:"required,min=1,dive"`
 	Aggregation          AggregationConfig  `json:"aggregation" yaml:"aggregation" toml:"aggregation"`
 	MaxParallelUpstreams int64              `json:"max_parallel_upstreams" yaml:"max_parallel_upstreams" toml:"max_parallel_upstreams"`
-}
-
-type AggregationConfig struct {
-	Strategy            string `json:"strategy" yaml:"strategy" toml:"strategy" validate:"required,oneof=array merge"`
-	AllowPartialResults bool   `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
-}
-
-type UpstreamConfig struct {
-	Name                string        `json:"name" yaml:"name" toml:"name"`
-	Hosts               []string      `json:"hosts" yaml:"hosts" toml:"hosts" validate:"required,hosts"`
-	Method              string        `json:"method" yaml:"method" toml:"method" validate:"required"`
-	Timeout             time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
-	ForwardHeaders      []string      `json:"forward_headers" yaml:"forward_headers" toml:"forward_headers"`
-	ForwardQueryStrings []string      `json:"forward_query_strings" yaml:"forward_query_strings" toml:"forward_query_strings"`
-	Policy              PolicyConfig  `json:"policy" yaml:"policy" toml:"policy"`
-}
-
-type PolicyConfig struct {
-	AllowedStatuses     []int       `json:"allowed_status_codes" yaml:"allowed_status_codes" toml:"allowed_status_codes"`
-	RequireBody         bool        `json:"allow_empty_body" yaml:"allow_empty_body" toml:"allow_empty_body"`
-	MapStatusCodes      map[int]int `json:"map_status_codes" yaml:"map_status_codes" toml:"map_status_codes"`
-	MaxResponseBodySize int64       `json:"max_response_body_size" yaml:"max_response_body_size" toml:"max_response_body_size"`
-
-	RetryConfig          RetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
-	CircuitBreakerConfig CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
-}
-
-type RetryConfig struct {
-	MaxRetries      int           `json:"max_retries" yaml:"max_retries" toml:"max_retries"`
-	RetryOnStatuses []int         `json:"retry_on_statuses" yaml:"retry_on_statuses" toml:"retry_on_statuses"`
-	BackoffDelay    time.Duration `json:"backoff_delay" yaml:"backoff_delay" toml:"backoff_delay"`
-}
-
-type CircuitBreakerConfig struct {
-	Enabled      bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
-	MaxFailures  int           `json:"max_failures" yaml:"max_failures" toml:"max_failures"`
-	ResetTimeout time.Duration `json:"reset_timeout" yaml:"reset_timeout" toml:"reset_timeout"`
 }
 
 type PluginConfig struct {
@@ -120,10 +85,46 @@ type MiddlewareConfig struct {
 	Override      bool                   `json:"override" yaml:"override" toml:"override"`
 }
 
-type FeatureConfig struct {
-	Enabled bool                   `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Name    string                 `json:"name" yaml:"name" toml:"name"`
-	Config  map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+type UpstreamConfig struct {
+	Name                string        `json:"name" yaml:"name" toml:"name"`
+	Hosts               []string      `json:"hosts" yaml:"hosts" toml:"hosts" validate:"min=1,dive"`
+	Method              string        `json:"method" yaml:"method" toml:"method" validate:"required"`
+	Timeout             time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
+	ForwardHeaders      []string      `json:"forward_headers" yaml:"forward_headers" toml:"forward_headers"`
+	ForwardQueryStrings []string      `json:"forward_query_strings" yaml:"forward_query_strings" toml:"forward_query_strings"`
+	Policy              PolicyConfig  `json:"policy" yaml:"policy" toml:"policy"`
+}
+
+type PolicyConfig struct {
+	AllowedStatuses     []int       `json:"allowed_status_codes" yaml:"allowed_status_codes" toml:"allowed_status_codes"`
+	RequireBody         bool        `json:"allow_empty_body" yaml:"allow_empty_body" toml:"allow_empty_body"`
+	MapStatusCodes      map[int]int `json:"map_status_codes" yaml:"map_status_codes" toml:"map_status_codes"`
+	MaxResponseBodySize int64       `json:"max_response_body_size" yaml:"max_response_body_size" toml:"max_response_body_size"`
+
+	RetryConfig          RetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
+	CircuitBreakerConfig CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
+	LoadBalancerConfig   LoadBalancerConfig   `json:"load_balancer" yaml:"load_balancer" toml:"load_balancer"`
+}
+
+type RetryConfig struct {
+	MaxRetries      int           `json:"max_retries" yaml:"max_retries" toml:"max_retries"`
+	RetryOnStatuses []int         `json:"retry_on_statuses" yaml:"retry_on_statuses" toml:"retry_on_statuses"`
+	BackoffDelay    time.Duration `json:"backoff_delay" yaml:"backoff_delay" toml:"backoff_delay"`
+}
+
+type CircuitBreakerConfig struct {
+	Enabled      bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
+	MaxFailures  int           `json:"max_failures" yaml:"max_failures" toml:"max_failures"`
+	ResetTimeout time.Duration `json:"reset_timeout" yaml:"reset_timeout" toml:"reset_timeout"`
+}
+
+type LoadBalancerConfig struct {
+	Mode string `json:"mode" yaml:"mode" toml:"mode"`
+}
+
+type AggregationConfig struct {
+	Strategy            string `json:"strategy" yaml:"strategy" toml:"strategy" validate:"required,oneof=array merge"`
+	AllowPartialResults bool   `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -176,14 +177,14 @@ func ensureDefaults(cfg *Config) {
 		cfg.Server.Timeout = defaultServerTimeout
 	}
 
-	for i := range cfg.Routes {
-		if cfg.Routes[i].MaxParallelUpstreams < 1 {
-			cfg.Routes[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
+	for i := range cfg.Router.Routes {
+		if cfg.Router.Routes[i].MaxParallelUpstreams < 1 {
+			cfg.Router.Routes[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
 		}
 
-		for j := range cfg.Routes[i].Upstreams {
-			if cfg.Routes[i].Upstreams[j].Timeout == 0 {
-				cfg.Routes[i].Upstreams[j].Timeout = defaultUpstreamTimeout
+		for j := range cfg.Router.Routes[i].Upstreams {
+			if cfg.Router.Routes[i].Upstreams[j].Timeout == 0 {
+				cfg.Router.Routes[i].Upstreams[j].Timeout = defaultUpstreamTimeout
 			}
 		}
 	}

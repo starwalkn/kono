@@ -34,7 +34,7 @@ func runValidate() error {
 		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = "./kono.json"
+		cfgPath = "./kono.yaml"
 	}
 
 	_, err := kono.LoadConfig(cfgPath)

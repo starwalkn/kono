@@ -22,3 +22,6 @@ build/middlewares
 build/plugins
 
 !build/Dockerfile
+
+# Future functionality 
+lua 

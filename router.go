@@ -31,22 +31,20 @@ type Router struct {
 }
 
 type RouterConfigSet struct {
-	Version     string
-	Routes      []RouteConfig
-	Middlewares []MiddlewareConfig
-	Features    []FeatureConfig
-	Metrics     MetricsConfig
+	Version           string
+	Router            RouterConfig
+	GlobalMiddlewares []MiddlewareConfig
+	Metrics           MetricsConfig
 }
 
 func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 	var (
-		routeConfigs            = routerConfigSet.Routes
-		globalMiddlewareConfigs = routerConfigSet.Middlewares
-		featureConfigs          = routerConfigSet.Features
+		routerConfig            = routerConfigSet.Router
+		globalMiddlewareConfigs = routerConfigSet.GlobalMiddlewares
 		metricsConfig           = routerConfigSet.Metrics
 	)
 
-	router := initMinimalRouter(len(routeConfigs), log)
+	router := initMinimalRouter(len(routerConfig.Routes), log)
 
 	if metricsConfig.Enabled {
 		switch metricsConfig.Provider {
@@ -57,25 +55,19 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 		}
 	}
 
-	for _, fcfg := range featureConfigs {
-		//nolint:gocritic // for the future
-		switch fcfg.Name {
-		case "ratelimit":
-			if fcfg.Enabled {
-				router.rateLimiter = ratelimit.New(fcfg.Config)
+	if routerConfig.RateLimiter.Enabled {
+		router.rateLimiter = ratelimit.New(routerConfig.RateLimiter.Config)
 
-				err := router.rateLimiter.Start()
-				if err != nil {
-					log.Fatal("failed to start ratelimit feature", zap.Error(err))
-				}
-			}
+		err := router.rateLimiter.Start()
+		if err != nil {
+			log.Fatal("failed to start ratelimit feature", zap.Error(err))
 		}
 	}
 
 	// Global middlewares.
 	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareConfigs, log)
 
-	for _, rcfg := range routeConfigs {
+	for _, rcfg := range routerConfig.Routes {
 		router.Routes = append(router.Routes, initRoute(rcfg, globalMiddlewares, globalMiddlewareIndices, log))
 	}
 
@@ -125,7 +117,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if r.rateLimiter != nil {
 		if !r.rateLimiter.Allow(extractClientIP(req)) {
-			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
+			WriteError(w, ClientErrRateLimitExceeded, http.StatusTooManyRequests)
 			return
 		}
 	}
@@ -149,7 +141,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err := p.Execute(tctx); err != nil {
 				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
 			}
@@ -160,7 +152,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if responses == nil {
 			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
-			WriteError(w, ErrorCodePayloadTooLarge, "request body too large", requestID, http.StatusRequestEntityTooLarge)
+			WriteError(w, ClientErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
 
 			return
 		}
@@ -183,7 +175,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		// Aggregate upstream responses
 		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
-		attachRequestID(aggregated.Errors, requestID)
 
 		r.log.Debug("aggregated responses",
 			zap.String("strategy", matchedRoute.Aggregation.Strategy),
@@ -197,19 +188,19 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		case len(aggregated.Errors) > 0 && !aggregated.Partial:
 			status = http.StatusInternalServerError
 
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   nil,
 				Errors: aggregated.Errors,
 			})
 		case aggregated.Partial:
 			status = http.StatusPartialContent
 
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: aggregated.Errors,
 			})
 		default:
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: nil,
 			})
@@ -235,7 +226,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err := p.Execute(tctx); err != nil {
 				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
 			}
@@ -283,12 +274,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
 		_ = resp.Body.Close()
-	}
-}
-
-func attachRequestID(errs []JSONError, requestID string) {
-	for i := range errs {
-		errs[i].RequestID = requestID
 	}
 }
 
