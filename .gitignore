@@ -26,4 +26,5 @@ build/plugins
 !build/Dockerfile
 
 # Future functionality 
-lua 
+lua
+cmake-build-debug
