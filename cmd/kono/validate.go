@@ -35,7 +35,7 @@ func runValidate() error {
 		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = fallbackCfgPath
+		cfgPath = fallbackConfigPath
 	}
 
 	_, err := kono.LoadConfig(cfgPath)

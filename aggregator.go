@@ -50,7 +50,7 @@ func (a *defaultAggregator) aggregate(responses []UpstreamResponse, aggregation 
 
 func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) AggregatedResponse {
 	if len(responses) > 1 {
-		return internalAggregationError()
+		return getRespInternalError()
 	}
 
 	resp := responses[0]
@@ -109,7 +109,6 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 			continue
 		}
 
-		// Handle JSON unmarshaling error as internal
 		if err := json.Unmarshal(resp.Body, &obj); err != nil {
 			a.log.Warn(
 				"failed to unmarshal response",
@@ -118,7 +117,7 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 			)
 
 			if !allowPartialResults {
-				return jsonParseError()
+				return getRespUpstreamMalformedError()
 			}
 
 			aggregationErrors = append(aggregationErrors, ClientErrUpstreamMalformed)
@@ -131,7 +130,7 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 
 	data, err := json.Marshal(merged)
 	if err != nil {
-		return internalAggregationError()
+		return getRespInternalError()
 	}
 
 	aggregationResponse := AggregatedResponse{
@@ -182,7 +181,7 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 
 	data, err := json.Marshal(arr)
 	if err != nil {
-		return jsonParseError()
+		return getRespUpstreamMalformedError()
 	}
 
 	aggregationResponse := AggregatedResponse{
@@ -211,7 +210,7 @@ func (a *defaultAggregator) mapUpstreamError(err error) ClientError {
 	}
 }
 
-func internalAggregationError() AggregatedResponse {
+func getRespInternalError() AggregatedResponse {
 	return AggregatedResponse{
 		Data:    nil,
 		Errors:  []ClientError{ClientErrInternal},
@@ -219,7 +218,7 @@ func internalAggregationError() AggregatedResponse {
 	}
 }
 
-func jsonParseError() AggregatedResponse {
+func getRespUpstreamMalformedError() AggregatedResponse {
 	return AggregatedResponse{
 		Data:    nil,
 		Errors:  []ClientError{ClientErrUpstreamMalformed},

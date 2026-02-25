@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const fallbackCfgPath = "/etc/kono/config.yaml"
+const fallbackConfigPath = "/etc/kono/config.yaml"
 
 var cfgPath string
 

@@ -19,7 +19,7 @@ var vizCmd = &cobra.Command{
 			cfgPath = os.Getenv("KONO_CONFIG")
 		}
 		if cfgPath == "" {
-			cfgPath = fallbackCfgPath
+			cfgPath = fallbackConfigPath
 		}
 
 		cfg, err := kono.LoadConfig(cfgPath)
@@ -36,12 +36,13 @@ func init() {
 }
 
 const (
-	colorReset   = "\033[0m"
-	colorBlue    = "\033[1;34m"
-	colorGreen   = "\033[1;32m"
-	colorYellow  = "\033[1;33m"
-	colorMagenta = "\033[1;35m"
-	colorCyan    = "\033[1;36m"
+	colorReset      = "\033[0m"
+	colorBlue       = "\033[1;34m"
+	colorGreen      = "\033[1;32m"
+	colorYellow     = "\033[1;33m"
+	colorDarkYellow = "\033[38;5;178m"
+	colorMagenta    = "\033[1;35m"
+	colorCyan       = "\033[1;36m"
 )
 
 func VisualizeFlowsTree(flows []kono.FlowConfig) error {
@@ -100,7 +101,6 @@ func VisualizeFlowsTree(flows []kono.FlowConfig) error {
 				upLabel = "upstream"
 			}
 
-			fmt.Println(upPrefix + colorBlue + "path: " + u.Method + " " + u.Path + colorReset)
 			fmt.Println(upPrefix + colorGreen + upLabel + colorReset)
 
 			for hi, host := range u.Hosts {
@@ -109,7 +109,14 @@ func VisualizeFlowsTree(flows []kono.FlowConfig) error {
 					hostPrefix = "│       └── "
 				}
 
-				fmt.Println(hostPrefix + colorYellow + host + colorReset)
+				method := fmt.Sprintf("%s%s", colorDarkYellow, u.Method)
+
+				host = strings.TrimSuffix(host, "/")
+				path := strings.TrimPrefix(u.Path, "/")
+
+				hostPath := colorYellow + host + "/" + path + colorReset
+
+				fmt.Println(hostPrefix + method + " " + hostPath)
 			}
 		}
 

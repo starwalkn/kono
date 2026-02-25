@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -18,6 +19,8 @@ import (
 	"github.com/starwalkn/kono/internal/metric"
 	"github.com/starwalkn/kono/internal/ratelimit"
 )
+
+const luaWorkerSocketPath = "/tmp/kono-lua.sock"
 
 type Router struct {
 	dispatcher dispatcher
@@ -138,6 +141,52 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
+			}
+		}
+
+		for _, script := range matchedFlow.Scripts {
+			if script.Source == sourceFile {
+				luaResp, err := r.luaSendGet(req, requestID)
+				if err != nil {
+					r.log.Error("failed to send-get request to lua worker", zap.String("request_id", requestID), zap.Error(err))
+					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+					return
+				}
+
+				switch luaResp.Action {
+				case luaActionContinue:
+					for k, v := range luaResp.Headers {
+						if len(v) == 0 {
+							continue
+						}
+
+						if len(v) > 1 {
+							for _, vv := range v {
+								w.Header().Add(k, vv)
+							}
+						} else {
+							req.Header.Set(k, v[0])
+						}
+					}
+
+					req.Method = luaResp.Method
+					req.URL.Path = luaResp.Path
+					req.URL.RawQuery = luaResp.Query
+					req.Header = luaResp.Headers
+
+					continue
+				case luaActionAbort:
+					r.log.Error("lua worker aborted request")
+					WriteError(w, ClientErrAborted, luaResp.Status)
+
+					return
+				default:
+					r.log.Error("unknown action from lua worker response", zap.String("action", luaResp.Action))
+					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+					return
+				}
 			}
 		}
 
@@ -309,4 +358,54 @@ func getOrCreateRequestID(r *http.Request) string {
 	entropy := ulid.Monotonic(rand.Reader, math.MaxInt64)
 
 	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), entropy).String())
+}
+
+// luaSendGet sends request data from the client to LuaWorker over a unix socket
+// and returns a modified request in the response with the action field.
+//
+// Action is a special field from LuaWorker that indicates the latest gateway action
+// with a request and can have one of two values - "continue" or "abort".
+func (r *Router) luaSendGet(req *http.Request, requestID string) (*LuaJSONResponse, error) {
+	conn, err := net.Dial("unix", luaWorkerSocketPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial lua worker socket: %w", err)
+	}
+	defer conn.Close()
+
+	luaReq := LuaJSONRequest{
+		RequestID: requestID,
+		Method:    req.Method,
+		Path:      req.URL.Path,
+		Query:     req.URL.RawQuery,
+		Headers:   req.Header.Clone(),
+		Body:      nil,
+		ClientIP:  extractClientIP(req),
+	}
+
+	msg, err := json.Marshal(&luaReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal lua request: %w", err)
+	}
+
+	if _, err = conn.Write(msg); err != nil {
+		return nil, fmt.Errorf("failed to write data to lua worker socket: %w", err)
+	}
+
+	rawLuaResp := make([]byte, len(msg)+1024)
+
+	_, err = conn.Read(rawLuaResp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read data from lua worker socket: %w", err)
+	}
+
+	luaResp := new(LuaJSONResponse)
+	if err = json.Unmarshal(rawLuaResp, luaResp); err != nil {
+		return nil, fmt.Errorf("cannot unmarshal response from lua worker socket: %w", err)
+	}
+
+	if luaResp == nil {
+		return nil, errors.New("nil-response from lua worker socket")
+	}
+
+	return luaResp, nil
 }

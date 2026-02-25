@@ -1,4 +1,4 @@
-package app
+package server
 
 import (
 	"context"
@@ -16,7 +16,7 @@ type Server struct {
 	log  *zap.Logger
 }
 
-func NewServer(cfg kono.GatewayConfig, log *zap.Logger) *Server {
+func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
 	routingConfigSet := kono.RoutingConfigSet{
 		Routing: cfg.Routing,
 		Metrics: cfg.Server.Metrics,

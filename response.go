@@ -24,6 +24,7 @@ const (
 	ClientErrUpstreamError       ClientError = "UPSTREAM_ERROR"
 	ClientErrUpstreamMalformed   ClientError = "UPSTREAM_MALFORMED"
 	ClientErrInternal            ClientError = "INTERNAL"
+	ClientErrAborted             ClientError = "ABORTED"
 )
 
 func WriteError(w http.ResponseWriter, code ClientError, status int) {
