@@ -395,7 +395,16 @@ func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID st
 		return nil, fmt.Errorf("failed to write data to lua worker socket: %w", err)
 	}
 
-	rawLuaResp := make([]byte, len(msg)+luaMsgExtraBufSize)
+	if len(msg) > luaMsgMaxSize {
+		return nil, fmt.Errorf("request message exceeds max size: %d bytes (limit %d)", len(msg), luaMsgMaxSize)
+	}
+
+	totalSize64 := int64(len(msg)) + int64(luaMsgExtraBufSize)
+	if totalSize64 < 0 || totalSize64 > int64(math.MaxInt) {
+		return nil, fmt.Errorf("calculated size of the response buffer overflows: %d", totalSize64)
+	}
+
+	rawLuaResp := make([]byte, totalSize64)
 
 	_, err = conn.Read(rawLuaResp)
 	if err != nil {

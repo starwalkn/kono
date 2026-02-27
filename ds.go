@@ -23,6 +23,7 @@ const (
 	luaActionAbort    = "abort"
 )
 
+const luaMsgMaxSize = 64 * 1024 * 1024 // 64 MB
 const luaMsgExtraBufSize = 1024
 
 type LuaJSONRequest struct {
