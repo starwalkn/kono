@@ -357,9 +357,22 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
 	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
 	target.Header.Set("Host", target.URL.Host)
 
-	if ip, _, err := net.SplitHostPort(original.RemoteAddr); err == nil {
-		target.Header.Add("X-Forwarded-For", ip)
+	clientIP, _, err := net.SplitHostPort(original.RemoteAddr)
+	if err == nil {
+		prior := original.Header.Get("X-Forwarded-For")
+		if prior != "" {
+			target.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+		} else {
+			target.Header.Set("X-Forwarded-For", clientIP)
+		}
 	}
+
+	proto := "http"
+	if original.TLS != nil {
+		proto = "https"
+	}
+	target.Header.Set("X-Forwarded-Proto", proto)
+	target.Header.Set("X-Forwarded-Host", original.Host)
 }
 
 func (u *httpUpstream) isBreakerFailure(uerr *UpstreamError) bool {
