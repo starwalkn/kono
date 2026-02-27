@@ -2,9 +2,9 @@ package kono
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -96,6 +96,8 @@ func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
 // - 500 Internal Server Error: allowPartialResults=false, at least one upstream failed.
 //
 // The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
+//
+//nolint:gocognit,funlen // refactor in future
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.metrics.IncRequestsTotal()
 
@@ -146,7 +148,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		for _, script := range matchedFlow.Scripts {
 			if script.Source == sourceFile {
-				luaResp, err := r.luaSendGet(req, requestID)
+				luaResp, err := r.luaSendGet(req.Context(), req, requestID)
 				if err != nil {
 					r.log.Error("failed to send-get request to lua worker", zap.String("request_id", requestID), zap.Error(err))
 					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
@@ -365,8 +367,10 @@ func getOrCreateRequestID(r *http.Request) string {
 //
 // Action is a special field from LuaWorker that indicates the latest gateway action
 // with a request and can have one of two values - "continue" or "abort".
-func (r *Router) luaSendGet(req *http.Request, requestID string) (*LuaJSONResponse, error) {
-	conn, err := net.Dial("unix", luaWorkerSocketPath)
+func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID string) (*LuaJSONResponse, error) {
+	dialer := &net.Dialer{}
+
+	conn, err := dialer.DialContext(ctx, "unix", luaWorkerSocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial lua worker socket: %w", err)
 	}
@@ -391,20 +395,16 @@ func (r *Router) luaSendGet(req *http.Request, requestID string) (*LuaJSONRespon
 		return nil, fmt.Errorf("failed to write data to lua worker socket: %w", err)
 	}
 
-	rawLuaResp := make([]byte, len(msg)+1024)
+	rawLuaResp := make([]byte, len(msg)+luaMsgExtraBufSize)
 
 	_, err = conn.Read(rawLuaResp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read data from lua worker socket: %w", err)
 	}
 
-	luaResp := new(LuaJSONResponse)
+	var luaResp = new(LuaJSONResponse)
 	if err = json.Unmarshal(rawLuaResp, luaResp); err != nil {
 		return nil, fmt.Errorf("cannot unmarshal response from lua worker socket: %w", err)
-	}
-
-	if luaResp == nil {
-		return nil, errors.New("nil-response from lua worker socket")
 	}
 
 	return luaResp, nil

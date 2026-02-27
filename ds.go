@@ -23,6 +23,8 @@ const (
 	luaActionAbort    = "abort"
 )
 
+const luaMsgExtraBufSize = 1024
+
 type LuaJSONRequest struct {
 	RequestID string      `json:"request_id"`
 	Method    string      `json:"method"`
