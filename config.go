@@ -50,8 +50,9 @@ type VictoriaMetricsConfig struct {
 }
 
 type RoutingConfig struct {
-	RateLimiter RateLimiterConfig `yaml:"rate_limiter" validate:"omitempty"`
-	Flows       []FlowConfig      `yaml:"flows" validate:"min=1,dive,required"`
+	RateLimiter    RateLimiterConfig `yaml:"rate_limiter" validate:"omitempty"`
+	TrustedProxies []string          `yaml:"trusted_proxies"`
+	Flows          []FlowConfig      `yaml:"flows" validate:"min=1,dive,required"`
 }
 
 type RateLimiterConfig struct {

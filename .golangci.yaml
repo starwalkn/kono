@@ -99,7 +99,6 @@ linters:
     - mnd # detects magic numbers
     - musttag # enforces field tags in (un)marshaled structs
     - nakedret # finds naked returns in functions greater than a specified function length
-    - nestif # reports deeply nested if statements
     - nilerr # finds the code that returns nil even if it checks that the error is not nil
     - nilnesserr # reports that it checks for err != nil, but it returns a different nil value error (powered by nilness and nilerr)
     - nilnil # checks that there is no simultaneous return of nil error and an invalid value
@@ -130,6 +129,7 @@ linters:
     - whitespace # detects leading and trailing whitespace
 
     ## you may want to enable
+    #- nestif # reports deeply nested if statements
     #- forbidigo # forbids identifiers
     #- revive # fast, configurable, extensible, flexible, and beautiful linter for Go, drop-in replacement of golint
     #- errcheck # checking for unchecked errors, these unchecked errors can be critical bugs in some cases

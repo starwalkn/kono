@@ -23,9 +23,10 @@ import (
 const luaWorkerSocketPath = "/tmp/kono-lua.sock"
 
 type Router struct {
-	dispatcher dispatcher
-	aggregator aggregator
-	Flows      []Flow
+	dispatcher     dispatcher
+	aggregator     aggregator
+	Flows          []Flow
+	TrustedProxies []string
 
 	log     *zap.Logger
 	metrics metric.Metrics
@@ -64,8 +65,18 @@ func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
 		}
 	}
 
+	trustedProxies := make([]*net.IPNet, 0, len(routingConfig.TrustedProxies))
+	for _, proxy := range routingConfig.TrustedProxies {
+		_, ipnet, err := net.ParseCIDR(proxy)
+		if err != nil {
+			log.Fatal("failed to parse trusted proxy CIDR", zap.Error(err))
+		}
+
+		trustedProxies = append(trustedProxies, ipnet)
+	}
+
 	for _, rcfg := range routingConfig.Flows {
-		router.Flows = append(router.Flows, initRoute(rcfg, log))
+		router.Flows = append(router.Flows, initRoute(rcfg, trustedProxies, log))
 	}
 
 	return router

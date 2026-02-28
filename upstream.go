@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -69,6 +70,7 @@ type httpUpstream struct {
 	timeout        time.Duration
 	forwardHeaders []string
 	forwardQueries []string
+	trustedProxies []*net.IPNet
 	policy         Policy
 
 	currentHostIdx    int64   // Round Robin.
@@ -265,7 +267,9 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 	}
 
 	u.resolveQueries(target, original)
-	u.resolveHeaders(target, original)
+	if err = u.resolveHeaders(target, original); err != nil {
+		return nil, fmt.Errorf("cannot resolve headers: %w", err)
+	}
 
 	return target, nil
 }
@@ -326,7 +330,7 @@ func (u *httpUpstream) resolveQueries(target, original *http.Request) {
 	target.URL.RawQuery = q.Encode()
 }
 
-func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
+func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
 	// Set forwarding headers
 	for _, fw := range u.forwardHeaders {
 		if fw == "*" {
@@ -353,26 +357,86 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
 		}
 	}
 
-	// Always forward these headers
 	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
-	target.Header.Set("Host", target.URL.Host)
 
-	clientIP, _, err := net.SplitHostPort(original.RemoteAddr)
-	if err == nil {
-		prior := original.Header.Get("X-Forwarded-For")
-		if prior != "" {
-			target.Header.Set("X-Forwarded-For", prior+", "+clientIP)
-		} else {
-			target.Header.Set("X-Forwarded-For", clientIP)
-		}
+	remoteHost, _, err := net.SplitHostPort(original.RemoteAddr)
+	if err != nil {
+		return fmt.Errorf("cannot split remote_addr '%s' to host port: %w", original.RemoteAddr, err)
 	}
+
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return fmt.Errorf("cannot parse remote_addr '%s' ip", remoteHost)
+	}
+
+	port := u.resolvePort(original)
 
 	proto := "http"
 	if original.TLS != nil {
 		proto = "https"
 	}
-	target.Header.Set("X-Forwarded-Proto", proto)
-	target.Header.Set("X-Forwarded-Host", original.Host)
+
+	clientIP := remoteIP.String()
+
+	// For untrusted proxies that are not included in the list of configured TrustedProxies,
+	// we cannot blindly trust their X-Forwarded-* headers.
+	// Therefore, in cases where remote_addr is not included in the TrustedProxies list,
+	// we determine the necessary header values ourselves, ignoring similar incoming headers.
+	if !u.isTrustedProxy(remoteIP) {
+		target.Header.Set("X-Forwarded-For", clientIP)
+		target.Header.Set("X-Forwarded-Proto", proto)
+		target.Header.Set("X-Forwarded-Host", original.Host)
+		target.Header.Set("X-Forwarded-Port", port)
+	} else {
+		if incomingXFF := original.Header.Get("X-Forwarded-For"); incomingXFF != "" {
+			target.Header.Set("X-Forwarded-For", incomingXFF+", "+clientIP)
+		} else {
+			target.Header.Set("X-Forwarded-For", clientIP)
+		}
+
+		if incomingProto := original.Header.Get("X-Forwarded-Proto"); incomingProto == "http" || incomingProto == "https" {
+			target.Header.Set("X-Forwarded-Proto", incomingProto)
+		} else {
+			target.Header.Set("X-Forwarded-Proto", proto)
+		}
+
+		if incomingHost := original.Header.Get("X-Forwarded-Host"); incomingHost != "" {
+			target.Header.Set("X-Forwarded-Host", incomingHost)
+		} else {
+			target.Header.Set("X-Forwarded-Host", original.Host)
+		}
+
+		if incomingPort := original.Header.Get("X-Forwarded-Port"); incomingPort != "" {
+			target.Header.Set("X-Forwarded-Port", incomingPort)
+		} else {
+			target.Header.Set("X-Forwarded-Port", port)
+		}
+	}
+
+	return nil
+}
+
+func (u *httpUpstream) isTrustedProxy(ip net.IP) bool {
+	for _, cidr := range u.trustedProxies {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (u *httpUpstream) resolvePort(req *http.Request) string {
+	_, port, err := net.SplitHostPort(req.Host)
+	if err != nil {
+		if req.TLS != nil {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+
+	return port
 }
 
 func (u *httpUpstream) isBreakerFailure(uerr *UpstreamError) bool {

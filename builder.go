@@ -2,6 +2,7 @@ package kono
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -134,7 +135,7 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 	return plugins
 }
 
-func initUpstreams(cfgs []UpstreamConfig) []Upstream {
+func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet) []Upstream {
 	upstreams := make([]Upstream, 0, len(cfgs))
 
 	//nolint:mnd // be configurable in future
@@ -186,6 +187,7 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 			timeout:           cfg.Timeout,
 			forwardHeaders:    cfg.ForwardHeaders,
 			forwardQueries:    cfg.ForwardQueries,
+			trustedProxies:    trustedProxies,
 			policy:            policy,
 			activeConnections: make([]int64, len(cfg.Hosts)),
 			client: &http.Client{
@@ -218,13 +220,13 @@ func makeUpstreamName(method string, hosts []string) string {
 	return sb.String()
 }
 
-func initRoute(cfg FlowConfig, log *zap.Logger) Flow {
+func initRoute(cfg FlowConfig, trustedProxies []*net.IPNet, log *zap.Logger) Flow {
 	return Flow{
 		Path:                 cfg.Path,
 		Method:               cfg.Method,
 		Aggregation:          cfg.Aggregation,
 		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
-		Upstreams:            initUpstreams(cfg.Upstreams),
+		Upstreams:            initUpstreams(cfg.Upstreams, trustedProxies),
 		Plugins:              initPlugins(cfg.Plugins, log),
 		Middlewares:          initMiddlewares(cfg.Middlewares, log),
 	}
