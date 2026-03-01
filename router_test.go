@@ -273,7 +273,7 @@ func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
 		aggregator: &defaultAggregator{log: zap.NewNop()},
 		Flows: []Flow{
 			{
-				Path:   "/test/upstream/error",
+				Path:   "/test/upstream/error/priority",
 				Method: http.MethodGet,
 				Aggregation: Aggregation{
 					Strategy:   strategyArray,
