@@ -1,4 +1,4 @@
-package app
+package server
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono"
-	"github.com/starwalkn/kono/dashboard"
 )
 
 type Server struct {
@@ -17,23 +16,20 @@ type Server struct {
 	log  *zap.Logger
 }
 
-func NewServer(cfg kono.Config, log *zap.Logger) *Server {
-	if cfg.Dashboard.Enabled {
-		dashboardServer := dashboard.NewServer(&cfg, log.Named("dashboard"))
-		go dashboardServer.Start()
+func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
+	routingConfigSet := kono.RoutingConfigSet{
+		Routing: cfg.Routing,
+		Metrics: cfg.Server.Metrics,
 	}
 
-	routerConfigSet := kono.RouterConfigSet{
-		Version:     cfg.Version,
-		Routes:      cfg.Routes,
-		Middlewares: cfg.Middlewares,
-		Features:    cfg.Features,
-		Metrics:     cfg.Server.Metrics,
-	}
-
-	mainRouter := kono.NewRouter(routerConfigSet, log.Named("router"))
+	mainRouter := kono.NewRouter(routingConfigSet, log.Named("router"))
 
 	mux := http.NewServeMux()
+
+	mux.Handle("/__health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK")) //nolint:errcheck,gosec // not important
+	}))
 
 	if cfg.Server.Metrics.Enabled {
 		mux.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

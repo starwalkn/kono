@@ -2,6 +2,7 @@ package kono
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,10 @@ import (
 )
 
 type Router struct {
-	dispatcher dispatcher
-	aggregator aggregator
-	Routes     []Route
+	dispatcher     dispatcher
+	aggregator     aggregator
+	Flows          []Flow
+	TrustedProxies []string
 
 	log     *zap.Logger
 	metrics metric.Metrics
@@ -30,64 +32,12 @@ type Router struct {
 	rateLimiter *ratelimit.RateLimit
 }
 
-type RouterConfigSet struct {
-	Version     string
-	Routes      []RouteConfig
-	Middlewares []MiddlewareConfig
-	Features    []FeatureConfig
-	Metrics     MetricsConfig
-}
-
-func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
-	var (
-		routeConfigs            = routerConfigSet.Routes
-		globalMiddlewareConfigs = routerConfigSet.Middlewares
-		featureConfigs          = routerConfigSet.Features
-		metricsConfig           = routerConfigSet.Metrics
-	)
-
-	router := initMinimalRouter(len(routeConfigs), log)
-
-	if metricsConfig.Enabled {
-		switch metricsConfig.Provider {
-		case "prometheus":
-			router.metrics = metric.NewPrometheus()
-		default:
-			router.metrics = metric.NewNop()
-		}
-	}
-
-	for _, fcfg := range featureConfigs {
-		//nolint:gocritic // for the future
-		switch fcfg.Name {
-		case "ratelimit":
-			if fcfg.Enabled {
-				router.rateLimiter = ratelimit.New(fcfg.Config)
-
-				err := router.rateLimiter.Start()
-				if err != nil {
-					log.Fatal("failed to start ratelimit feature", zap.Error(err))
-				}
-			}
-		}
-	}
-
-	// Global middlewares.
-	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareConfigs, log)
-
-	for _, rcfg := range routeConfigs {
-		router.Routes = append(router.Routes, initRoute(rcfg, globalMiddlewares, globalMiddlewareIndices, log))
-	}
-
-	return router
-}
-
 // ServeHTTP handles incoming HTTP requests through the full router pipeline.
 //
 // The processing steps are:
 //
 // 1. Rate limiting (if enabled) – rejects requests exceeding allowed limits.
-// 2. Route matching – finds a Route that matches the request method and path.
+// 2. Flow matching – finds a Flow that matches the request method and path.
 //   - If no route is found, responds with 404.
 //
 // 3. Middleware execution – wraps the route handler with all configured middlewares in reverse order.
@@ -107,16 +57,18 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 // - 500 Internal Server Error: allowPartialResults=false, at least one upstream failed.
 //
 // The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
+//
+//nolint:gocognit,funlen // refactor in future
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.metrics.IncRequestsTotal()
 
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
 
-	matchedRoute := r.match(req)
-	if matchedRoute == nil {
-		r.log.Error("no route matched", zap.String("request_uri", req.URL.RequestURI()))
-		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedRoute)
+	matchedFlow := r.match(req)
+	if matchedFlow == nil {
+		r.log.Error("no flow matched", zap.String("request_uri", req.URL.RequestURI()))
+		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedFlow)
 
 		http.NotFound(w, req)
 
@@ -125,14 +77,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if r.rateLimiter != nil {
 		if !r.rateLimiter.Allow(extractClientIP(req)) {
-			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
+			WriteError(w, ClientErrRateLimitExceeded, http.StatusTooManyRequests)
 			return
 		}
 	}
 
-	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	var flowHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
-		defer r.metrics.UpdateRequestsDuration(matchedRoute.Path, matchedRoute.Method, start)
+		defer r.metrics.UpdateRequestsDuration(matchedFlow.Path, matchedFlow.Method, start)
 
 		// Kono internal context
 		tctx := newContext(req)
@@ -140,7 +92,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		requestID := getOrCreateRequestID(req)
 
 		// Request-phase plugins
-		for _, p := range matchedRoute.Plugins {
+		for _, p := range matchedFlow.Plugins {
 			if p.Type() != PluginTypeRequest {
 				continue
 			}
@@ -149,18 +101,64 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err := p.Execute(tctx); err != nil {
 				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
 			}
 		}
 
+		for _, script := range matchedFlow.Scripts {
+			if script.Source == sourceFile {
+				luaResp, err := r.luaSendGet(req.Context(), req, requestID)
+				if err != nil {
+					r.log.Error("failed to send-get request to lua worker", zap.String("request_id", requestID), zap.Error(err))
+					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+					return
+				}
+
+				switch luaResp.Action {
+				case luaActionContinue:
+					for k, v := range luaResp.Headers {
+						if len(v) == 0 {
+							continue
+						}
+
+						if len(v) > 1 {
+							for _, vv := range v {
+								w.Header().Add(k, vv)
+							}
+						} else {
+							req.Header.Set(k, v[0])
+						}
+					}
+
+					req.Method = luaResp.Method
+					req.URL.Path = luaResp.Path
+					req.URL.RawQuery = luaResp.Query
+					req.Header = luaResp.Headers
+
+					continue
+				case luaActionAbort:
+					r.log.Error("lua worker aborted request")
+					WriteError(w, ClientErrAborted, luaResp.Status)
+
+					return
+				default:
+					r.log.Error("unknown action from lua worker response", zap.String("action", luaResp.Action))
+					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+					return
+				}
+			}
+		}
+
 		// Upstream dispatch
-		responses := r.dispatcher.dispatch(matchedRoute, req)
+		responses := r.dispatcher.dispatch(matchedFlow, req)
 		if responses == nil {
 			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
-			WriteError(w, ErrorCodePayloadTooLarge, "request body too large", requestID, http.StatusRequestEntityTooLarge)
+			WriteError(w, ClientErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
 
 			return
 		}
@@ -182,34 +180,29 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.log.Debug("dispatched responses", zap.Any("responses", responses))
 
 		// Aggregate upstream responses
-		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
-		attachRequestID(aggregated.Errors, requestID)
+		aggregated := r.aggregator.aggregate(responses, matchedFlow.Aggregation)
 
 		r.log.Debug("aggregated responses",
-			zap.String("strategy", matchedRoute.Aggregation.Strategy),
+			zap.String("strategy", matchedFlow.Aggregation.Strategy.String()),
 			zap.Any("aggregated", aggregated),
 		)
 
 		var responseBody []byte
 
-		status := http.StatusOK
+		status := statusFromErrors(aggregated.Errors, aggregated.Partial)
 		switch {
 		case len(aggregated.Errors) > 0 && !aggregated.Partial:
-			status = http.StatusInternalServerError
-
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   nil,
 				Errors: aggregated.Errors,
 			})
 		case aggregated.Partial:
-			status = http.StatusPartialContent
-
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: aggregated.Errors,
 			})
 		default:
-			responseBody = mustMarshal(JSONResponse{
+			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: nil,
 			})
@@ -226,7 +219,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		tctx.SetResponse(resp)
 
 		// Response-phase plugins
-		for _, p := range matchedRoute.Plugins {
+		for _, p := range matchedFlow.Plugins {
 			if p.Type() != PluginTypeResponse {
 				continue
 			}
@@ -235,36 +228,36 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err := p.Execute(tctx); err != nil {
 				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
+				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 
 				return
 			}
 		}
 
-		r.metrics.IncResponsesTotal(matchedRoute.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
+		r.metrics.IncResponsesTotal(matchedFlow.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
 
 		// Write final output.
 		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse
 	})
 
-	for i := len(matchedRoute.Middlewares) - 1; i >= 0; i-- {
-		routeHandler = matchedRoute.Middlewares[i].Handler(routeHandler)
+	for i := len(matchedFlow.Middlewares) - 1; i >= 0; i-- {
+		flowHandler = matchedFlow.Middlewares[i].Handler(flowHandler)
 	}
 
-	routeHandler.ServeHTTP(w, req)
+	flowHandler.ServeHTTP(w, req)
 }
 
-// match matches the given request to a route.
-func (r *Router) match(req *http.Request) *Route {
-	for i := range r.Routes {
-		route := &r.Routes[i]
+// match matches the given request to a flow.
+func (r *Router) match(req *http.Request) *Flow {
+	for i := range r.Flows {
+		flow := &r.Flows[i]
 
-		if route.Method != "" && !strings.EqualFold(route.Method, req.Method) {
+		if flow.Method != "" && !strings.EqualFold(flow.Method, req.Method) {
 			continue
 		}
 
-		if route.Path != "" && req.URL.Path == route.Path {
-			return route
+		if flow.Path != "" && req.URL.Path == flow.Path {
+			return flow
 		}
 	}
 
@@ -283,12 +276,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
 		_ = resp.Body.Close()
-	}
-}
-
-func attachRequestID(errs []JSONError, requestID string) {
-	for i := range errs {
-		errs[i].RequestID = requestID
 	}
 }
 
@@ -330,4 +317,122 @@ func getOrCreateRequestID(r *http.Request) string {
 	entropy := ulid.Monotonic(rand.Reader, math.MaxInt64)
 
 	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), entropy).String())
+}
+
+func statusFromErrors(errors []ClientError, partial bool) int {
+	if partial {
+		return http.StatusPartialContent
+	}
+
+	if len(errors) == 0 {
+		return http.StatusOK
+	}
+
+	var selected ClientError
+	maxPriority := -1
+
+	for _, e := range errors {
+		p := errorPriority(e)
+		if p > maxPriority {
+			maxPriority = p
+			selected = e
+		}
+	}
+
+	switch selected {
+	case ClientErrRateLimitExceeded:
+		return http.StatusTooManyRequests
+	case ClientErrPayloadTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case ClientErrUpstreamBodyTooLarge:
+		return http.StatusBadGateway
+	case ClientErrUpstreamUnavailable:
+		return http.StatusBadGateway
+	case ClientErrUpstreamError:
+		return http.StatusBadGateway
+	case ClientErrUpstreamMalformed:
+		return http.StatusBadGateway
+	case ClientErrValueConflict:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+//nolint:mnd // error priority be configurable in future releases
+func errorPriority(e ClientError) int {
+	switch e {
+	case ClientErrRateLimitExceeded:
+		return 100
+	case ClientErrPayloadTooLarge,
+		ClientErrUpstreamBodyTooLarge:
+		return 90
+	case ClientErrValueConflict:
+		return 80
+	case ClientErrUpstreamUnavailable,
+		ClientErrUpstreamError,
+		ClientErrUpstreamMalformed:
+		return 50
+	case ClientErrInternal:
+		return 10
+	default:
+		return 0
+	}
+}
+
+// luaSendGet sends request data from the client to LuaWorker over a unix socket
+// and returns a modified request in the response with the action field.
+//
+// Action is a special field from LuaWorker that indicates the latest gateway action
+// with a request and can have one of two values - "continue" or "abort".
+func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID string) (*LuaJSONResponse, error) {
+	dialer := &net.Dialer{}
+
+	conn, err := dialer.DialContext(ctx, "unix", luaWorkerSocketPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial lua worker socket: %w", err)
+	}
+	defer conn.Close()
+
+	luaReq := LuaJSONRequest{
+		RequestID: requestID,
+		Method:    req.Method,
+		Path:      req.URL.Path,
+		Query:     req.URL.RawQuery,
+		Headers:   req.Header.Clone(),
+		Body:      nil,
+		ClientIP:  extractClientIP(req),
+	}
+
+	msg, err := json.Marshal(&luaReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal lua request: %w", err)
+	}
+
+	if _, err = conn.Write(msg); err != nil {
+		return nil, fmt.Errorf("failed to write data to lua worker socket: %w", err)
+	}
+
+	if len(msg) > luaMsgMaxSize {
+		return nil, fmt.Errorf("request message exceeds max size: %d bytes (limit %d)", len(msg), luaMsgMaxSize)
+	}
+
+	totalSize64 := int64(len(msg)) + int64(luaMsgExtraBufSize)
+	if totalSize64 < 0 || totalSize64 > int64(math.MaxInt) {
+		return nil, fmt.Errorf("calculated size of the response buffer overflows: %d", totalSize64)
+	}
+
+	rawLuaResp := make([]byte, totalSize64)
+
+	_, err = conn.Read(rawLuaResp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read data from lua worker socket: %w", err)
+	}
+
+	var luaResp = new(LuaJSONResponse)
+	if err = json.Unmarshal(rawLuaResp, luaResp); err != nil {
+		return nil, fmt.Errorf("cannot unmarshal response from lua worker socket: %w", err)
+	}
+
+	return luaResp, nil
 }

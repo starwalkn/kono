@@ -1,3 +1,5 @@
+.idea
+
 # Plugins
 *.so
 
@@ -22,3 +24,5 @@ build/middlewares
 build/plugins
 
 !build/Dockerfile
+
+cmake-build-debug

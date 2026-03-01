@@ -1,17 +1,14 @@
 package kono
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/go-playground/validator/v10"
 	"gopkg.in/yaml.v3"
 )
@@ -22,108 +19,145 @@ const (
 )
 
 type Config struct {
-	ConfigVersion string             `json:"config_version" yaml:"config_version" toml:"config_version" validate:"required,oneof=v1"`
-	Name          string             `json:"name" yaml:"name" toml:"name" validate:"required"`
-	Version       string             `json:"version" yaml:"version" toml:"version" validate:"required"`
-	Debug         bool               `json:"debug" yaml:"debug" toml:"debug"`
-	Server        ServerConfig       `json:"server" yaml:"server" toml:"server"`
-	Dashboard     DashboardConfig    `json:"dashboard" yaml:"dashboard" toml:"dashboard"`
-	Features      []FeatureConfig    `json:"features" yaml:"features" toml:"features"`
-	Middlewares   []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
-	Routes        []RouteConfig      `json:"routes" yaml:"routes" toml:"routes" validate:"min=1,dive"`
+	Schema  string        `yaml:"schema" validate:"required,oneof=v1"`
+	Debug   bool          `yaml:"debug"`
+	Gateway GatewayConfig `yaml:"gateway" validate:"required"`
+}
+
+type GatewayConfig struct {
+	Server  ServerConfig  `yaml:"server" validate:"required"`
+	Routing RoutingConfig `yaml:"routing" validate:"required"`
 }
 
 type ServerConfig struct {
-	Port    int           `json:"port" yaml:"port" toml:"port" validate:"required,min=1,max=65535"`
-	Timeout time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
-	Metrics MetricsConfig `json:"metrics" yaml:"metrics" toml:"metrics"`
+	Port    int           `yaml:"port" validate:"required,min=1,max=65535"`
+	Timeout time.Duration `yaml:"timeout"`
+	Metrics MetricsConfig `yaml:"metrics"`
 }
 
 type MetricsConfig struct {
-	Enabled  bool   `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Provider string `json:"provider" yaml:"provider" toml:"provider"`
+	Enabled  bool   `yaml:"enabled"`
+	Provider string `yaml:"provider"`
 
-	VictoriaMetrics VictoriaMetricsConfig `json:"victoria_metrics" yaml:"victoria_metrics" toml:"victoria_metrics"`
+	VictoriaMetrics VictoriaMetricsConfig `yaml:"victoria_metrics"`
 }
 
 type VictoriaMetricsConfig struct {
-	Host     string        `json:"host" yaml:"host" toml:"host"`
-	Port     int           `json:"port" yaml:"port" toml:"port"`
-	Path     string        `json:"path" yaml:"path" toml:"path"`
-	Interval time.Duration `json:"interval" yaml:"interval" toml:"interval"`
+	Host     string        `yaml:"host"`
+	Port     int           `yaml:"port"`
+	Path     string        `yaml:"path"`
+	Interval time.Duration `yaml:"interval"`
 }
 
-type DashboardConfig struct {
-	Enabled bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Port    int           `json:"port" yaml:"port" toml:"port"`
-	Timeout time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
+type RoutingConfig struct {
+	RateLimiter    RateLimiterConfig `yaml:"rate_limiter" validate:"omitempty"`
+	TrustedProxies []string          `yaml:"trusted_proxies"`
+	Flows          []FlowConfig      `yaml:"flows" validate:"min=1,dive,required"`
 }
 
-type RouteConfig struct {
-	Path                 string             `json:"path" yaml:"path" toml:"path" validate:"required"`
-	Method               string             `json:"method" yaml:"method" toml:"method" validate:"required"`
-	Plugins              []PluginConfig     `json:"plugins" yaml:"plugins" toml:"plugins"`
-	Middlewares          []MiddlewareConfig `json:"middlewares" yaml:"middlewares" toml:"middlewares"`
-	Upstreams            []UpstreamConfig   `json:"upstreams" yaml:"upstreams" toml:"upstreams" validate:"required,min=1,dive"`
-	Aggregation          AggregationConfig  `json:"aggregation" yaml:"aggregation" toml:"aggregation"`
-	MaxParallelUpstreams int64              `json:"max_parallel_upstreams" yaml:"max_parallel_upstreams" toml:"max_parallel_upstreams"`
+type RateLimiterConfig struct {
+	Enabled bool                   `yaml:"enabled"`
+	Config  map[string]interface{} `yaml:"config" validate:"required"`
+}
+
+type FlowConfig struct {
+	Path                 string             `yaml:"path" validate:"required"`
+	Method               string             `yaml:"method" validate:"required"`
+	Aggregation          AggregationConfig  `yaml:"aggregation" validate:"required"`
+	MaxParallelUpstreams int64              `yaml:"max_parallel_upstreams"`
+	Upstreams            []UpstreamConfig   `yaml:"upstreams" validate:"required,min=1,dive,required"`
+	Plugins              []PluginConfig     `yaml:"plugins" validate:"omitempty,dive"`
+	Middlewares          []MiddlewareConfig `yaml:"middlewares" validate:"omitempty,dive"`
 }
 
 type AggregationConfig struct {
-	Strategy            string `json:"strategy" yaml:"strategy" toml:"strategy" validate:"required,oneof=array merge"`
-	AllowPartialResults bool   `json:"allow_partial_results" yaml:"allow_partial_results" toml:"allow_partial_results"`
+	BestEffort bool             `yaml:"best_effort"`
+	Strategy   string           `yaml:"strategy" validate:"required,oneof=array merge"`
+	OnConflict OnConflictConfig `yaml:"on_conflict" validate:"required_if=Strategy merge"`
+}
+
+type OnConflictConfig struct {
+	Policy   string `yaml:"policy" validate:"oneof=overwrite error first prefer"`
+	Upstream string `yaml:"prefer_upstream" validate:"required_if=Policy prefer"`
 }
 
 type UpstreamConfig struct {
-	Name                string        `json:"name" yaml:"name" toml:"name"`
-	Hosts               []string      `json:"hosts" yaml:"hosts" toml:"hosts" validate:"required,hosts"`
-	Method              string        `json:"method" yaml:"method" toml:"method" validate:"required"`
-	Timeout             time.Duration `json:"timeout" yaml:"timeout" toml:"timeout"`
-	ForwardHeaders      []string      `json:"forward_headers" yaml:"forward_headers" toml:"forward_headers"`
-	ForwardQueryStrings []string      `json:"forward_query_strings" yaml:"forward_query_strings" toml:"forward_query_strings"`
-	Policy              PolicyConfig  `json:"policy" yaml:"policy" toml:"policy"`
-}
-
-type PolicyConfig struct {
-	AllowedStatuses     []int       `json:"allowed_status_codes" yaml:"allowed_status_codes" toml:"allowed_status_codes"`
-	RequireBody         bool        `json:"allow_empty_body" yaml:"allow_empty_body" toml:"allow_empty_body"`
-	MapStatusCodes      map[int]int `json:"map_status_codes" yaml:"map_status_codes" toml:"map_status_codes"`
-	MaxResponseBodySize int64       `json:"max_response_body_size" yaml:"max_response_body_size" toml:"max_response_body_size"`
-
-	RetryConfig          RetryConfig          `json:"retry" yaml:"retry" toml:"retry"`
-	CircuitBreakerConfig CircuitBreakerConfig `json:"circuit_breaker" yaml:"circuit_breaker" toml:"circuit_breaker"`
-}
-
-type RetryConfig struct {
-	MaxRetries      int           `json:"max_retries" yaml:"max_retries" toml:"max_retries"`
-	RetryOnStatuses []int         `json:"retry_on_statuses" yaml:"retry_on_statuses" toml:"retry_on_statuses"`
-	BackoffDelay    time.Duration `json:"backoff_delay" yaml:"backoff_delay" toml:"backoff_delay"`
-}
-
-type CircuitBreakerConfig struct {
-	Enabled      bool          `json:"enabled" yaml:"enabled" toml:"enabled"`
-	MaxFailures  int           `json:"max_failures" yaml:"max_failures" toml:"max_failures"`
-	ResetTimeout time.Duration `json:"reset_timeout" yaml:"reset_timeout" toml:"reset_timeout"`
+	Name           string        `yaml:"name"`
+	Hosts          AddrList      `yaml:"hosts" validate:"min=1,dive"`
+	Path           string        `yaml:"path"`
+	Method         string        `yaml:"method" validate:"required"`
+	Timeout        time.Duration `yaml:"timeout"`
+	ForwardHeaders []string      `yaml:"forward_headers"`
+	ForwardQueries []string      `yaml:"forward_queries"`
+	Policy         PolicyConfig  `yaml:"policy"`
 }
 
 type PluginConfig struct {
-	Name   string                 `json:"name" yaml:"name" toml:"name"`
-	Path   string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
-	Config map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+	Name   string                 `yaml:"name" validate:"required"`
+	Source string                 `yaml:"source" validate:"required,oneof=builtin file"`
+	Path   string                 `yaml:"path" validate:"required_if=Source file"`
+	Config map[string]interface{} `yaml:"config"`
 }
 
 type MiddlewareConfig struct {
-	Name          string                 `json:"name" yaml:"name" toml:"name"`
-	Path          string                 `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty"`
-	Config        map[string]interface{} `json:"config" yaml:"config" toml:"config"`
-	CanFailOnLoad bool                   `json:"can_fail_on_load" yaml:"can_fail_on_load" toml:"can_fail_on_load"`
-	Override      bool                   `json:"override" yaml:"override" toml:"override"`
+	Name   string                 `yaml:"name" validate:"required"`
+	Source string                 `yaml:"source" validate:"required,oneof=builtin file"`
+	Path   string                 `yaml:"path" validate:"required_if=Source file,omitempty"`
+	Config map[string]interface{} `yaml:"config"`
 }
 
-type FeatureConfig struct {
-	Enabled bool                   `json:"enabled" yaml:"enabled" toml:"enabled"`
-	Name    string                 `json:"name" yaml:"name" toml:"name"`
-	Config  map[string]interface{} `json:"config" yaml:"config" toml:"config"`
+type PolicyConfig struct {
+	AllowedStatuses     []int       `yaml:"allowed_status_codes"`
+	RequireBody         bool        `yaml:"allow_empty_body"`
+	MapStatusCodes      map[int]int `yaml:"map_status_codes"`
+	MaxResponseBodySize int64       `yaml:"max_response_body_size"`
+
+	RetryConfig          RetryConfig          `yaml:"retry"`
+	CircuitBreakerConfig CircuitBreakerConfig `yaml:"circuit_breaker"`
+	LoadBalancingConfig  LoadBalancingConfig  `yaml:"load_balancer"`
+}
+
+type RetryConfig struct {
+	MaxRetries      int           `yaml:"max_retries"`
+	RetryOnStatuses []int         `yaml:"retry_on_statuses"`
+	BackoffDelay    time.Duration `yaml:"backoff_delay"`
+}
+
+type CircuitBreakerConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	MaxFailures  int           `yaml:"max_failures"`
+	ResetTimeout time.Duration `yaml:"reset_timeout"`
+}
+
+type LoadBalancingConfig struct {
+	Mode string `yaml:"mode"`
+}
+
+type AddrList []string
+
+func (a *AddrList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var addr string
+		if err := value.Decode(&addr); err != nil {
+			return err
+		}
+
+		*a = []string{addr}
+
+		return nil
+	case yaml.SequenceNode:
+		var addrs []string
+		if err := value.Decode(&addrs); err != nil {
+			return err
+		}
+
+		*a = addrs
+
+		return nil
+	default:
+		return fmt.Errorf("unexpected YAML node kind for AddrList: %v", value.Kind)
+	}
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -134,28 +168,15 @@ func LoadConfig(path string) (Config, error) {
 
 	var cfg Config
 
-	switch filepath.Ext(path) {
-	case ".json":
-		if err = json.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("cannot parse configuration file: %w", err)
-		}
-	case ".yaml", ".yml":
-		if err = yaml.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("cannot parse configuration file: %w", err)
-		}
-	case ".toml":
-		if err = toml.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("cannot parse configuration file: %w", err)
-		}
-	default:
-		return Config{}, fmt.Errorf("unknown configuration file extension: %s", filepath.Ext(path))
+	if err = yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("cannot parse configuration file: %w", err)
 	}
 
-	ensureDefaults(&cfg)
+	ensureGatewayDefaults(&cfg.Gateway)
 
 	v := validator.New()
 	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
-		name := fld.Tag.Get(strings.TrimPrefix(filepath.Ext(path), "."))
+		name := fld.Tag.Get("yaml")
 		if name == "" || name == "-" {
 			return strings.ToLower(fld.Name)
 		}
@@ -164,26 +185,26 @@ func LoadConfig(path string) (Config, error) {
 	})
 
 	if err = v.Struct(&cfg); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: %w", formatValidationError(err))
+		return Config{}, fmt.Errorf("invalid configuration: \n%w", formatValidationError(err))
 	}
 
 	return cfg, nil
 }
 
-// ensureDefaults ensures that default values are used in required configuration fields if they are not explicitly set.
-func ensureDefaults(cfg *Config) {
+// ensureGatewayDefaults ensures that default values are used in required configuration fields if they are not explicitly set.
+func ensureGatewayDefaults(cfg *GatewayConfig) {
 	if cfg.Server.Timeout == 0 {
 		cfg.Server.Timeout = defaultServerTimeout
 	}
 
-	for i := range cfg.Routes {
-		if cfg.Routes[i].MaxParallelUpstreams < 1 {
-			cfg.Routes[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
+	for i := range cfg.Routing.Flows {
+		if cfg.Routing.Flows[i].MaxParallelUpstreams < 1 {
+			cfg.Routing.Flows[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
 		}
 
-		for j := range cfg.Routes[i].Upstreams {
-			if cfg.Routes[i].Upstreams[j].Timeout == 0 {
-				cfg.Routes[i].Upstreams[j].Timeout = defaultUpstreamTimeout
+		for j := range cfg.Routing.Flows[i].Upstreams {
+			if cfg.Routing.Flows[i].Upstreams[j].Timeout == 0 {
+				cfg.Routing.Flows[i].Upstreams[j].Timeout = defaultUpstreamTimeout
 			}
 		}
 	}
@@ -202,7 +223,7 @@ func formatValidationError(err error) error {
 		path := strings.TrimPrefix(fe.Namespace(), "Config.")
 
 		messages = append(messages, fmt.Sprintf(
-			"%s: %s",
+			"  %s: %s",
 			path,
 			humanMessage(fe),
 		))
@@ -225,6 +246,12 @@ func humanMessage(fe validator.FieldError) string {
 	case "hosts":
 		return "must be a valid URL"
 
+	case "required_if":
+		if fe.Field() == "path" {
+			return "is required when source is 'file'"
+		}
+
+		return fe.Error()
 	default:
 		return fmt.Sprintf("validation failed on '%s'", fe.Tag())
 	}

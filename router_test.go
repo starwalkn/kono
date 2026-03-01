@@ -16,10 +16,10 @@ import (
 	"github.com/starwalkn/kono/internal/metric"
 )
 
-func decodeJSONResponse(t *testing.T, body []byte) JSONResponse {
+func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
 	t.Helper()
 
-	var resp JSONResponse
+	var resp ClientResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("invalid JSON response: %v\nbody=%s", err, body)
 	}
@@ -31,7 +31,7 @@ type mockDispatcher struct {
 	results []UpstreamResponse
 }
 
-func (m *mockDispatcher) dispatch(_ *Route, _ *http.Request) []UpstreamResponse {
+func (m *mockDispatcher) dispatch(_ *Flow, _ *http.Request) []UpstreamResponse {
 	return m.results
 }
 
@@ -77,13 +77,13 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:   "/test/basic/flow",
 				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: false,
 				},
 			},
 		},
@@ -137,13 +137,13 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:   "/test/partial/response",
 				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: true,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: true,
 				},
 			},
 		},
@@ -175,8 +175,8 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
 	}
 
-	if resp.Errors[0].Code != ErrorCodeUpstreamUnavailable && resp.Errors[0].Message != "service temporarily unavailable" {
-		t.Fatalf("unexpected error code or message %s %s", resp.Errors[0].Code, resp.Errors[0].Message)
+	if resp.Errors[0] != ClientErrUpstreamUnavailable {
+		t.Fatalf("unexpected error code: %s", resp.Errors[0])
 	}
 
 	var got []string
@@ -201,13 +201,13 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:   "/test/upstream/error",
 				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: false,
 				},
 			},
 		},
@@ -223,8 +223,8 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", res.StatusCode)
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", res.StatusCode)
 	}
 
 	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
@@ -243,14 +243,80 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
 	}
 
-	if resp.Errors[0].Code != ErrorCodeUpstreamUnavailable && resp.Errors[0].Message != "service temporarily unavailable" {
-		t.Fatalf("unexpected error code or message %s %s", resp.Errors[0].Code, resp.Errors[0].Message)
+	if resp.Errors[0] != ClientErrUpstreamUnavailable {
+		t.Fatalf("unexpected error code: %s", resp.Errors[0])
+	}
+}
+
+func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
+	r := &Router{
+		dispatcher: &mockDispatcher{
+			results: []UpstreamResponse{
+				{
+					Status: http.StatusInternalServerError,
+					Body:   nil,
+					Err: &UpstreamError{
+						Kind: "unknown_error_kind", // will be mapped to InternalError
+						Err:  errors.New("upstream unknown_error_kind"),
+					},
+				},
+				{
+					Status: http.StatusInternalServerError,
+					Body:   nil,
+					Err: &UpstreamError{
+						Kind: UpstreamTimeout,
+						Err:  errors.New("upstream timeout"),
+					},
+				},
+			},
+		},
+		aggregator: &defaultAggregator{log: zap.NewNop()},
+		Flows: []Flow{
+			{
+				Path:   "/test/upstream/error/priority",
+				Method: http.MethodGet,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: true,
+				},
+			},
+		},
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/test/upstream/error/priority", nil)
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", res.StatusCode)
+	}
+
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("unexpected Content-Type: %s", ct)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+
+	resp := decodeJSONResponse(t, body)
+
+	if resp.Data != nil {
+		t.Fatalf("unexpected data: %v", resp.Data)
+	}
+
+	if len(resp.Errors) != 2 {
+		t.Fatalf("expected 2 error, got %d", len(resp.Errors))
 	}
 }
 
 func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
 	r := &Router{
-		Routes:  nil,
+		Flows:   nil,
 		log:     zap.NewNop(),
 		metrics: metric.NewNop(),
 	}
@@ -295,14 +361,14 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:    "/test/with/plugins",
 				Method:  http.MethodGet,
 				Plugins: []Plugin{requestPlugin, responsePlugin},
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: false,
 				},
 			},
 		},
@@ -355,7 +421,7 @@ func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
 			},
 		},
 		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
+		Flows: []Flow{
 			{
 				Path:        "/test/with/middleware",
 				Method:      http.MethodGet,
