@@ -81,9 +81,9 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 			{
 				Path:   "/test/basic/flow",
 				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: false,
 				},
 			},
 		},
@@ -141,9 +141,9 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 			{
 				Path:   "/test/partial/response",
 				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: true,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: true,
 				},
 			},
 		},
@@ -205,9 +205,9 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 			{
 				Path:   "/test/upstream/error",
 				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: false,
 				},
 			},
 		},
@@ -223,8 +223,8 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", res.StatusCode)
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", res.StatusCode)
 	}
 
 	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
@@ -245,6 +245,72 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 
 	if resp.Errors[0] != ClientErrUpstreamUnavailable {
 		t.Fatalf("unexpected error code: %s", resp.Errors[0])
+	}
+}
+
+func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
+	r := &Router{
+		dispatcher: &mockDispatcher{
+			results: []UpstreamResponse{
+				{
+					Status: http.StatusInternalServerError,
+					Body:   nil,
+					Err: &UpstreamError{
+						Kind: "unknown_error_kind", // will be mapped to InternalError
+						Err:  errors.New("upstream unknown_error_kind"),
+					},
+				},
+				{
+					Status: http.StatusInternalServerError,
+					Body:   nil,
+					Err: &UpstreamError{
+						Kind: UpstreamTimeout,
+						Err:  errors.New("upstream timeout"),
+					},
+				},
+			},
+		},
+		aggregator: &defaultAggregator{log: zap.NewNop()},
+		Flows: []Flow{
+			{
+				Path:   "/test/upstream/error",
+				Method: http.MethodGet,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: true,
+				},
+			},
+		},
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/test/upstream/error/priority", nil)
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", res.StatusCode)
+	}
+
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("unexpected Content-Type: %s", ct)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+
+	resp := decodeJSONResponse(t, body)
+
+	if resp.Data != nil {
+		t.Fatalf("unexpected data: %v", resp.Data)
+	}
+
+	if len(resp.Errors) != 2 {
+		t.Fatalf("expected 2 error, got %d", len(resp.Errors))
 	}
 }
 
@@ -300,9 +366,9 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 				Path:    "/test/with/plugins",
 				Method:  http.MethodGet,
 				Plugins: []Plugin{requestPlugin, responsePlugin},
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
+				Aggregation: Aggregation{
+					Strategy:   strategyArray,
+					BestEffort: false,
 				},
 			},
 		},

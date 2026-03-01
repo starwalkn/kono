@@ -6,7 +6,7 @@ luajit /usr/local/lib/kono/luaworker/main.lua &
 
 LUA_PID=$!
 
-# Forward signals to Lua
+# Forward signals to LuaWorker
 term_handler() {
   echo "Shutting down..."
   kill -TERM "$LUA_PID" 2>/dev/null

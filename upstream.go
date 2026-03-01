@@ -369,14 +369,13 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
 		return fmt.Errorf("cannot parse remote_addr '%s' ip", remoteHost)
 	}
 
+	clientIP := remoteIP.String()
 	port := u.resolvePort(original)
 
 	proto := "http"
 	if original.TLS != nil {
 		proto = "https"
 	}
-
-	clientIP := remoteIP.String()
 
 	// For untrusted proxies that are not included in the list of configured TrustedProxies,
 	// we cannot blindly trust their X-Forwarded-* headers.
@@ -387,6 +386,9 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
 		target.Header.Set("X-Forwarded-Proto", proto)
 		target.Header.Set("X-Forwarded-Host", original.Host)
 		target.Header.Set("X-Forwarded-Port", port)
+
+		forwarded := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, original.Host)
+		target.Header.Set("Forwarded", forwarded)
 	} else {
 		if incomingXFF := original.Header.Get("X-Forwarded-For"); incomingXFF != "" {
 			target.Header.Set("X-Forwarded-For", incomingXFF+", "+clientIP)
@@ -395,21 +397,27 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
 		}
 
 		if incomingProto := original.Header.Get("X-Forwarded-Proto"); incomingProto == "http" || incomingProto == "https" {
-			target.Header.Set("X-Forwarded-Proto", incomingProto)
-		} else {
-			target.Header.Set("X-Forwarded-Proto", proto)
+			proto = incomingProto
 		}
+		target.Header.Set("X-Forwarded-Proto", proto)
 
+		host := original.Host
 		if incomingHost := original.Header.Get("X-Forwarded-Host"); incomingHost != "" {
-			target.Header.Set("X-Forwarded-Host", incomingHost)
-		} else {
-			target.Header.Set("X-Forwarded-Host", original.Host)
+			host = incomingHost
 		}
+		target.Header.Set("X-Forwarded-Host", host)
 
 		if incomingPort := original.Header.Get("X-Forwarded-Port"); incomingPort != "" {
 			target.Header.Set("X-Forwarded-Port", incomingPort)
 		} else {
 			target.Header.Set("X-Forwarded-Port", port)
+		}
+
+		newHop := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, host)
+		if incomingForwarded := original.Header.Get("Forwarded"); incomingForwarded != "" {
+			target.Header.Set("Forwarded", incomingForwarded+", "+newHop)
+		} else {
+			target.Header.Set("Forwarded", newHop)
 		}
 	}
 

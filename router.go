@@ -20,8 +20,6 @@ import (
 	"github.com/starwalkn/kono/internal/ratelimit"
 )
 
-const luaWorkerSocketPath = "/tmp/kono-lua.sock"
-
 type Router struct {
 	dispatcher     dispatcher
 	aggregator     aggregator
@@ -32,54 +30,6 @@ type Router struct {
 	metrics metric.Metrics
 
 	rateLimiter *ratelimit.RateLimit
-}
-
-type RoutingConfigSet struct {
-	Routing RoutingConfig
-	Metrics MetricsConfig
-}
-
-func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
-	var (
-		routingConfig = routingConfigSet.Routing
-		metricsConfig = routingConfigSet.Metrics
-	)
-
-	router := initMinimalRouter(len(routingConfig.Flows), log)
-
-	if metricsConfig.Enabled {
-		switch metricsConfig.Provider {
-		case "prometheus":
-			router.metrics = metric.NewPrometheus()
-		default:
-			router.metrics = metric.NewNop()
-		}
-	}
-
-	if routingConfig.RateLimiter.Enabled {
-		router.rateLimiter = ratelimit.New(routingConfig.RateLimiter.Config)
-
-		err := router.rateLimiter.Start()
-		if err != nil {
-			log.Fatal("failed to start ratelimit feature", zap.Error(err))
-		}
-	}
-
-	trustedProxies := make([]*net.IPNet, 0, len(routingConfig.TrustedProxies))
-	for _, proxy := range routingConfig.TrustedProxies {
-		_, ipnet, err := net.ParseCIDR(proxy)
-		if err != nil {
-			log.Fatal("failed to parse trusted proxy CIDR", zap.Error(err))
-		}
-
-		trustedProxies = append(trustedProxies, ipnet)
-	}
-
-	for _, rcfg := range routingConfig.Flows {
-		router.Flows = append(router.Flows, initRoute(rcfg, trustedProxies, log))
-	}
-
-	return router
 }
 
 // ServeHTTP handles incoming HTTP requests through the full router pipeline.
@@ -233,24 +183,20 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		aggregated := r.aggregator.aggregate(responses, matchedFlow.Aggregation)
 
 		r.log.Debug("aggregated responses",
-			zap.String("strategy", matchedFlow.Aggregation.Strategy),
+			zap.String("strategy", matchedFlow.Aggregation.Strategy.String()),
 			zap.Any("aggregated", aggregated),
 		)
 
 		var responseBody []byte
 
-		status := http.StatusOK
+		status := statusFromErrors(aggregated.Errors, aggregated.Partial)
 		switch {
 		case len(aggregated.Errors) > 0 && !aggregated.Partial:
-			status = http.StatusInternalServerError
-
 			responseBody = mustMarshal(ClientResponse{
 				Data:   nil,
 				Errors: aggregated.Errors,
 			})
 		case aggregated.Partial:
-			status = http.StatusPartialContent
-
 			responseBody = mustMarshal(ClientResponse{
 				Data:   aggregated.Data,
 				Errors: aggregated.Errors,
@@ -371,6 +317,67 @@ func getOrCreateRequestID(r *http.Request) string {
 	entropy := ulid.Monotonic(rand.Reader, math.MaxInt64)
 
 	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), entropy).String())
+}
+
+func statusFromErrors(errors []ClientError, partial bool) int {
+	if partial {
+		return http.StatusPartialContent
+	}
+
+	if len(errors) == 0 {
+		return http.StatusOK
+	}
+
+	var selected ClientError
+	maxPriority := -1
+
+	for _, e := range errors {
+		p := errorPriority(e)
+		if p > maxPriority {
+			maxPriority = p
+			selected = e
+		}
+	}
+
+	switch selected {
+	case ClientErrRateLimitExceeded:
+		return http.StatusTooManyRequests
+	case ClientErrPayloadTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case ClientErrUpstreamBodyTooLarge:
+		return http.StatusBadGateway
+	case ClientErrUpstreamUnavailable:
+		return http.StatusBadGateway
+	case ClientErrUpstreamError:
+		return http.StatusBadGateway
+	case ClientErrUpstreamMalformed:
+		return http.StatusBadGateway
+	case ClientErrValueConflict:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+//nolint:mnd // error priority be configurable in future releases
+func errorPriority(e ClientError) int {
+	switch e {
+	case ClientErrRateLimitExceeded:
+		return 100
+	case ClientErrPayloadTooLarge,
+		ClientErrUpstreamBodyTooLarge:
+		return 90
+	case ClientErrValueConflict:
+		return 80
+	case ClientErrUpstreamUnavailable,
+		ClientErrUpstreamError,
+		ClientErrUpstreamMalformed:
+		return 50
+	case ClientErrInternal:
+		return 10
+	default:
+		return 0
+	}
 }
 
 // luaSendGet sends request data from the client to LuaWorker over a unix socket

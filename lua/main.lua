@@ -160,7 +160,7 @@ local function worker_loop()
                 --     "client_ip": "10.0.0.1"
                 -- }
 
-                request.headers["X-LuaWorker-Modified"] = 1
+                request.headers["X-Kono-Modified"] = 1
 
                 -- example of body modifying
 

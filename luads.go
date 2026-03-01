@@ -2,29 +2,22 @@ package kono
 
 import "net/http"
 
-type Flow struct {
-	Path                 string
-	Method               string
-	Aggregation          AggregationConfig
-	MaxParallelUpstreams int64
-	Upstreams            []Upstream
-	Scripts              []Script
-	Plugins              []Plugin
-	Middlewares          []Middleware
-}
-
 type Script struct {
 	Source string
 	Path   string
 }
+
+const luaWorkerSocketPath = "/tmp/kono-lua.sock"
 
 const (
 	luaActionContinue = "continue"
 	luaActionAbort    = "abort"
 )
 
-const luaMsgMaxSize = 64 * 1024 * 1024 // 64 MB
-const luaMsgExtraBufSize = 1024
+const (
+	luaMsgMaxSize      = 64 * 1024 * 1024 // 64 MB
+	luaMsgExtraBufSize = 1024
+)
 
 type LuaJSONRequest struct {
 	RequestID string      `json:"request_id"`

@@ -1,6 +1,7 @@
 package kono
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
 	"github.com/starwalkn/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/ratelimit"
 )
 
 const (
@@ -23,6 +25,59 @@ const (
 	builtinPluginsPath     = "/usr/local/lib/kono/plugins/"
 	builtinMiddlewaresPath = "/usr/local/lib/kono/middlewares/"
 )
+
+type RoutingConfigSet struct {
+	Routing RoutingConfig
+	Metrics MetricsConfig
+}
+
+func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
+	var (
+		routingConfig = routingConfigSet.Routing
+		metricsConfig = routingConfigSet.Metrics
+	)
+
+	router := initMinimalRouter(len(routingConfig.Flows), log)
+
+	if metricsConfig.Enabled {
+		switch metricsConfig.Provider {
+		case "prometheus":
+			router.metrics = metric.NewPrometheus()
+		default:
+			router.metrics = metric.NewNop()
+		}
+	}
+
+	if routingConfig.RateLimiter.Enabled {
+		router.rateLimiter = ratelimit.New(routingConfig.RateLimiter.Config)
+
+		err := router.rateLimiter.Start()
+		if err != nil {
+			log.Fatal("failed to start ratelimit feature", zap.Error(err))
+		}
+	}
+
+	trustedProxies := make([]*net.IPNet, 0, len(routingConfig.TrustedProxies))
+	for _, proxy := range routingConfig.TrustedProxies {
+		_, ipnet, err := net.ParseCIDR(proxy)
+		if err != nil {
+			log.Fatal("failed to parse trusted proxy CIDR", zap.Error(err))
+		}
+
+		trustedProxies = append(trustedProxies, ipnet)
+	}
+
+	for _, rcfg := range routingConfig.Flows {
+		flow, err := compileFlow(rcfg, trustedProxies, log)
+		if err != nil {
+			log.Fatal("failed to initialize flow", zap.Error(err))
+		}
+
+		router.Flows = append(router.Flows, flow)
+	}
+
+	return router
+}
 
 func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
 	metrics := metric.NewNop()
@@ -40,6 +95,25 @@ func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
 		metrics:     metrics,
 		rateLimiter: nil,
 	}
+}
+
+func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, log *zap.Logger) (Flow, error) {
+	upstreams := initUpstreams(cfg.Upstreams, trustedProxies)
+
+	aggregation, err := initAggregation(cfg.Aggregation, upstreams)
+	if err != nil {
+		return Flow{}, err
+	}
+
+	return Flow{
+		Path:                 cfg.Path,
+		Method:               cfg.Method,
+		Aggregation:          aggregation,
+		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
+		Upstreams:            upstreams,
+		Plugins:              initPlugins(cfg.Plugins, log),
+		Middlewares:          initMiddlewares(cfg.Middlewares, log),
+	}, nil
 }
 
 func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
@@ -206,11 +280,11 @@ func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet) []Upstrea
 func makeUpstreamName(method string, hosts []string) string {
 	sb := strings.Builder{}
 
-	sb.WriteString(strings.ToUpper(method))
+	sb.WriteString(strings.ToLower(method))
 	sb.WriteString("-")
 
 	for i, host := range hosts {
-		sb.WriteString(host)
+		sb.WriteString(strings.ToLower(host))
 
 		if i != len(hosts)-1 {
 			sb.WriteString("-")
@@ -220,14 +294,80 @@ func makeUpstreamName(method string, hosts []string) string {
 	return sb.String()
 }
 
-func initRoute(cfg FlowConfig, trustedProxies []*net.IPNet, log *zap.Logger) Flow {
-	return Flow{
-		Path:                 cfg.Path,
-		Method:               cfg.Method,
-		Aggregation:          cfg.Aggregation,
-		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
-		Upstreams:            initUpstreams(cfg.Upstreams, trustedProxies),
-		Plugins:              initPlugins(cfg.Plugins, log),
-		Middlewares:          initMiddlewares(cfg.Middlewares, log),
+func initAggregation(cfg AggregationConfig, upstreams []Upstream) (Aggregation, error) {
+	strategy, err := compileStrategy(cfg.Strategy)
+	if err != nil {
+		return Aggregation{}, err
+	}
+
+	agg := Aggregation{
+		BestEffort:        cfg.BestEffort,
+		Strategy:          strategy,
+		ConflictPolicy:    conflictPolicyOverwrite, // default, value used only for merge strategy
+		PreferredUpstream: -1,                      // default, value used only for merge strategy
+	}
+
+	if strategy != strategyMerge {
+		return agg, nil
+	}
+
+	conflict, err := compileConflictPolicy(cfg.OnConflict.Policy)
+	if err != nil {
+		return Aggregation{}, err
+	}
+
+	agg.ConflictPolicy = conflict
+
+	if conflict == conflictPolicyPrefer {
+		if cfg.OnConflict.Upstream == "" {
+			return Aggregation{}, errors.New("no upstream specified for on_conflict prefer policy")
+		}
+
+		idx, found := searchUpstream(cfg.OnConflict.Upstream, upstreams)
+		if !found {
+			return Aggregation{}, errors.New("preferred upstream for on_conflict policy does not exist")
+		}
+
+		agg.PreferredUpstream = idx
+	}
+
+	return agg, nil
+}
+
+func searchUpstream(name string, upstreams []Upstream) (int, bool) {
+	for i, u := range upstreams {
+		if u.Name() == name {
+			return i, true
+		}
+	}
+
+	return -1, false
+}
+
+func compileStrategy(s string) (aggregationStrategy, error) {
+	switch s {
+	case "array":
+		return strategyArray, nil
+	case "merge":
+		return strategyMerge, nil
+	case "namespace":
+		return strategyNamespace, nil
+	default:
+		return 0, fmt.Errorf("unknown aggregation strategy: '%q'", s)
+	}
+}
+
+func compileConflictPolicy(p string) (conflictPolicy, error) {
+	switch p {
+	case "overwrite":
+		return conflictPolicyOverwrite, nil
+	case "error":
+		return conflictPolicyError, nil
+	case "first":
+		return conflictPolicyFirst, nil
+	case "prefer":
+		return conflictPolicyPrefer, nil
+	default:
+		return 0, fmt.Errorf("unknown aggregation conflict policy: '%q'", p)
 	}
 }

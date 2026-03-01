@@ -71,8 +71,14 @@ type FlowConfig struct {
 }
 
 type AggregationConfig struct {
-	Strategy            string `yaml:"strategy" validate:"required,oneof=array merge"`
-	AllowPartialResults bool   `yaml:"allow_partial_results"`
+	BestEffort bool             `yaml:"best_effort"`
+	Strategy   string           `yaml:"strategy" validate:"required,oneof=array merge"`
+	OnConflict OnConflictConfig `yaml:"on_conflict" validate:"required_if=Strategy merge"`
+}
+
+type OnConflictConfig struct {
+	Policy   string `yaml:"policy" validate:"oneof=overwrite error first prefer"`
+	Upstream string `yaml:"prefer_upstream" validate:"required_if=Policy prefer"`
 }
 
 type UpstreamConfig struct {

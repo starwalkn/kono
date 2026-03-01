@@ -3,14 +3,8 @@ package kono
 import (
 	"encoding/json"
 	"errors"
-	"maps"
 
 	"go.uber.org/zap"
-)
-
-const (
-	strategyMerge = "merge"
-	strategyArray = "array"
 )
 
 type AggregatedResponse struct {
@@ -20,7 +14,7 @@ type AggregatedResponse struct {
 }
 
 type aggregator interface {
-	aggregate(responses []UpstreamResponse, aggregation AggregationConfig) AggregatedResponse
+	aggregate(responses []UpstreamResponse, aggregation Aggregation) AggregatedResponse
 }
 
 type defaultAggregator struct {
@@ -30,20 +24,22 @@ type defaultAggregator struct {
 // aggregate combines multiple upstream responses based on the route's strategy.
 // Single responses are returned as-is. Multiple responses are aggregated either
 // by merging JSON objects ("merge") or creating a JSON array ("array").
-// Upstream errors respect allowPartialResults: partial results may be included
+// Upstream errors respect bestEffort: partial results may be included
 // if allowed; otherwise a single error response is returned.
-func (a *defaultAggregator) aggregate(responses []UpstreamResponse, aggregation AggregationConfig) AggregatedResponse {
+func (a *defaultAggregator) aggregate(responses []UpstreamResponse, aggregation Aggregation) AggregatedResponse {
 	if len(responses) == 1 {
 		return a.rawResponse(responses)
 	}
 
 	switch aggregation.Strategy {
 	case strategyMerge:
-		return a.mergeResponses(responses, aggregation.AllowPartialResults)
+		return a.merged(responses, aggregation)
 	case strategyArray:
-		return a.arrayOfResponses(responses, aggregation.AllowPartialResults)
+		return a.arrayed(responses, aggregation)
+	case strategyNamespace:
+		return a.namespaced(responses, aggregation)
 	default:
-		a.log.Error("unknown aggregation strategy", zap.String("strategy", aggregation.Strategy))
+		a.log.Error("unknown aggregation strategy", zap.String("strategy", aggregation.Strategy.String()))
 		return AggregatedResponse{}
 	}
 }
@@ -73,26 +69,32 @@ func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) Aggregated
 	}
 }
 
-func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
-	merged := make(map[string]interface{})
+type field struct {
+	value interface{} // Upstream response data.
+	owner int         // Upstream index.
+}
+
+func (a *defaultAggregator) merged(responses []UpstreamResponse, aggregation Aggregation) AggregatedResponse {
+	merged := make(map[string]field)
 
 	var aggregationErrors []ClientError
 
-	for _, resp := range responses {
+	successfulResponseCount := 0
+
+	for idx, resp := range responses {
 		var obj map[string]interface{}
 
-		// Handle upstream error
 		if resp.Err != nil {
 			clientError := a.mapUpstreamError(resp.Err)
 
 			a.log.Warn(
 				"upstream has errors",
-				zap.Bool("allow_partial_results", allowPartialResults),
-				zap.String("upstream_error", resp.Err.Unwrap().Error()),
+				zap.Bool("best_effort", aggregation.BestEffort),
+				zap.String("upstream_error", resp.Err.Error()),
 				zap.String("client_error", clientError.String()),
 			)
 
-			if !allowPartialResults {
+			if !aggregation.BestEffort {
 				return AggregatedResponse{
 					Data:    nil,
 					Errors:  []ClientError{clientError},
@@ -105,18 +107,14 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 			continue
 		}
 
+		successfulResponseCount++
+
 		if resp.Body == nil {
 			continue
 		}
 
 		if err := json.Unmarshal(resp.Body, &obj); err != nil {
-			a.log.Warn(
-				"failed to unmarshal response",
-				zap.Bool("allow_partial_results", allowPartialResults),
-				zap.Error(err),
-			)
-
-			if !allowPartialResults {
+			if !aggregation.BestEffort {
 				return getRespUpstreamMalformedError()
 			}
 
@@ -125,27 +123,64 @@ func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPa
 			continue
 		}
 
-		maps.Copy(merged, obj)
+		for k, v := range obj {
+			current, exists := merged[k]
+
+			if !exists {
+				merged[k] = field{value: v, owner: idx}
+				continue
+			}
+
+			switch aggregation.ConflictPolicy {
+			case conflictPolicyOverwrite:
+				merged[k] = field{value: v, owner: idx}
+			case conflictPolicyFirst:
+				// We do nothing, since the first value has already been written
+			case conflictPolicyError:
+				return AggregatedResponse{
+					Data:    nil,
+					Errors:  []ClientError{ClientErrValueConflict},
+					Partial: false,
+				}
+			case conflictPolicyPrefer:
+				// If the current owner is preferred, we do nothing
+				if current.owner == aggregation.PreferredUpstream {
+					continue
+				}
+
+				// If the new upstream is preferred, we replace it.
+				if idx == aggregation.PreferredUpstream {
+					merged[k] = field{value: v, owner: idx}
+				}
+
+				// Otherwise, we do nothing
+			}
+		}
 	}
 
-	data, err := json.Marshal(merged)
+	final := make(map[string]interface{}, len(merged))
+	for k, v := range merged {
+		final[k] = v.value
+	}
+
+	data, err := json.Marshal(final)
 	if err != nil {
 		return getRespInternalError()
 	}
 
-	aggregationResponse := AggregatedResponse{
+	return AggregatedResponse{
 		Data:    data,
 		Errors:  dedupeErrors(aggregationErrors),
-		Partial: len(aggregationErrors) > 0,
+		Partial: len(aggregationErrors) > 0 && successfulResponseCount > 0,
 	}
-
-	return aggregationResponse
 }
 
-func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
+func (a *defaultAggregator) arrayed(responses []UpstreamResponse, aggregation Aggregation) AggregatedResponse {
 	var arr []json.RawMessage
 
 	var aggregationErrors []ClientError
+
+	successfulResponseCount := 0
 
 	for _, resp := range responses {
 		// Handle upstream error
@@ -154,12 +189,12 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 
 			a.log.Warn(
 				"upstream has errors",
-				zap.Bool("allow_partial_results", allowPartialResults),
+				zap.Bool("best_effort", aggregation.BestEffort),
 				zap.String("upstream_error", resp.Err.Unwrap().Error()),
 				zap.String("client_error", clientError.String()),
 			)
 
-			if !allowPartialResults {
+			if !aggregation.BestEffort {
 				return AggregatedResponse{
 					Data:    nil,
 					Errors:  []ClientError{clientError},
@@ -171,6 +206,8 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 
 			continue
 		}
+
+		successfulResponseCount++
 
 		if resp.Body == nil {
 			continue
@@ -187,10 +224,18 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 	aggregationResponse := AggregatedResponse{
 		Data:    data,
 		Errors:  dedupeErrors(aggregationErrors),
-		Partial: len(aggregationErrors) > 0,
+		Partial: len(aggregationErrors) > 0 && successfulResponseCount > 0,
 	}
 
 	return aggregationResponse
+}
+
+func (a *defaultAggregator) namespaced(_ []UpstreamResponse, _ Aggregation) AggregatedResponse {
+	return AggregatedResponse{
+		Data:    nil,
+		Errors:  []ClientError{"not implemented"},
+		Partial: false,
+	}
 }
 
 func (a *defaultAggregator) mapUpstreamError(err error) ClientError {
@@ -205,6 +250,8 @@ func (a *defaultAggregator) mapUpstreamError(err error) ClientError {
 		return ClientErrUpstreamUnavailable
 	case UpstreamBadStatus:
 		return ClientErrUpstreamError
+	case UpstreamBodyTooLarge:
+		return ClientErrUpstreamBodyTooLarge
 	default:
 		return ClientErrInternal
 	}
