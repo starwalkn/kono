@@ -26,9 +26,11 @@ type CircuitBreaker struct {
 
 func New(threshold int, resetTimeout time.Duration) *CircuitBreaker {
 	return &CircuitBreaker{
-		state:        Closed,
-		threshold:    threshold,
-		resetTimeout: resetTimeout,
+		state:         Closed,
+		failures:      0,
+		threshold:     threshold,
+		resetTimeout:  resetTimeout,
+		halfOpenTrial: false,
 	}
 }
 

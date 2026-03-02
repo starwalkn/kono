@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"slices"
@@ -60,15 +62,19 @@ const (
 
 // httpUpstream is an implementation of Upstream interface.
 type httpUpstream struct {
-	id                  string // UUID for internal usage.
-	name                string // For logs.
-	hosts               []string
-	currentHostIdx      uint64
-	method              string
-	timeout             time.Duration
-	forwardHeaders      []string
-	forwardQueryStrings []string
-	policy              Policy
+	id             string // UUID for internal usage.
+	name           string // For logs.
+	hosts          []string
+	path           string
+	method         string
+	timeout        time.Duration
+	forwardHeaders []string
+	forwardQueries []string
+	trustedProxies []*net.IPNet
+	policy         Policy
+
+	currentHostIdx    int64   // Round Robin.
+	activeConnections []int64 // Least Connections.
 
 	circuitBreaker *circuitbreaker.CircuitBreaker
 
@@ -150,7 +156,14 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
 
-	req, err := u.newRequest(ctx, original, originalBody)
+	selectedHost := u.selectHost()
+
+	if u.policy.LoadBalancing.Mode == LBModeLeastConns {
+		atomic.AddInt64(&u.activeConnections[selectedHost], 1)
+		defer atomic.AddInt64(&u.activeConnections[selectedHost], -1)
+	}
+
+	req, err := u.newRequest(ctx, original, originalBody, u.hosts[selectedHost])
 	if err != nil {
 		uresp.Err = &UpstreamError{
 			Kind: UpstreamInternal,
@@ -227,46 +240,81 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 	return uresp
 }
 
-func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte) (*http.Request, error) {
+func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte, targetHost string) (*http.Request, error) {
+	var hostPath string
+
+	path := strings.TrimPrefix(u.path, "/")
+	if strings.HasSuffix(targetHost, "/") {
+		hostPath = targetHost + path
+	} else {
+		hostPath = targetHost + "/" + path
+	}
+
 	method := u.method
 	if method == "" {
-		// Fallback method.
+		// Fallback method
 		method = original.Method
 	}
 
-	// Send request body only for body-acceptable methods requests.
+	// Send request body only for body-acceptable methods requests
 	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
 		originalBody = nil
 	}
 
-	target, err := http.NewRequestWithContext(ctx, method, u.selectHost(), bytes.NewReader(originalBody))
+	target, err := http.NewRequestWithContext(ctx, method, hostPath, bytes.NewReader(originalBody))
 	if err != nil {
 		return nil, err
 	}
 
-	u.resolveQueryStrings(target, original)
-	u.resolveHeaders(target, original)
+	u.resolveQueries(target, original)
+	if err = u.resolveHeaders(target, original); err != nil {
+		return nil, fmt.Errorf("cannot resolve headers: %w", err)
+	}
 
 	return target, nil
 }
 
-func (u *httpUpstream) selectHost() string {
+// selectHost returns the index of selected host in hosts slice.
+func (u *httpUpstream) selectHost() int64 {
 	if len(u.hosts) == 1 {
-		return u.hosts[0]
+		return 0
 	}
 
-	idx := atomic.AddUint64(&u.currentHostIdx, 1)
-	host := u.hosts[idx%uint64(len(u.hosts))]
+	var selectedHost int64
 
-	u.log.Debug("new host selected", zap.String("host", host), zap.String("upstream", u.name))
+	switch u.policy.LoadBalancing.Mode {
+	case LBModeRoundRobin:
+		idx := atomic.AddInt64(&u.currentHostIdx, 1)
+		selectedHost = idx % int64(len(u.hosts))
+	case LBModeLeastConns:
+		var (
+			best           int64
+			minActiveConns int64 = math.MaxInt64
+		)
 
-	return host
+		for i := range u.hosts {
+			curHostActiveConns := atomic.LoadInt64(&u.activeConnections[i])
+
+			if curHostActiveConns < minActiveConns {
+				minActiveConns = curHostActiveConns
+				best = int64(i)
+			}
+		}
+
+		selectedHost = best
+	default:
+		selectedHost = 0
+	}
+
+	u.log.Debug("new host selected", zap.String("host", u.hosts[selectedHost]), zap.String("upstream", u.name))
+
+	return selectedHost
 }
 
-func (u *httpUpstream) resolveQueryStrings(target, original *http.Request) {
+func (u *httpUpstream) resolveQueries(target, original *http.Request) {
 	q := target.URL.Query()
 
-	for _, fqs := range u.forwardQueryStrings {
+	for _, fqs := range u.forwardQueries {
 		if fqs == "*" {
 			q = original.URL.Query()
 			break
@@ -282,7 +330,7 @@ func (u *httpUpstream) resolveQueryStrings(target, original *http.Request) {
 	target.URL.RawQuery = q.Encode()
 }
 
-func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
+func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
 	// Set forwarding headers
 	for _, fw := range u.forwardHeaders {
 		if fw == "*" {
@@ -309,13 +357,94 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) {
 		}
 	}
 
-	// Always forward these headers
 	target.Header.Set("Content-Type", original.Header.Get("Content-Type"))
-	target.Header.Set("Host", target.URL.Host)
 
-	if ip, _, err := net.SplitHostPort(original.RemoteAddr); err == nil {
-		target.Header.Add("X-Forwarded-For", ip)
+	remoteHost, _, err := net.SplitHostPort(original.RemoteAddr)
+	if err != nil {
+		return fmt.Errorf("cannot split remote_addr '%s' to host port: %w", original.RemoteAddr, err)
 	}
+
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return fmt.Errorf("cannot parse remote_addr '%s' ip", remoteHost)
+	}
+
+	clientIP := remoteIP.String()
+	port := u.resolvePort(original)
+
+	proto := "http"
+	if original.TLS != nil {
+		proto = "https"
+	}
+
+	// For untrusted proxies that are not included in the list of configured TrustedProxies,
+	// we cannot blindly trust their X-Forwarded-* headers.
+	// Therefore, in cases where remote_addr is not included in the TrustedProxies list,
+	// we determine the necessary header values ourselves, ignoring similar incoming headers.
+	if !u.isTrustedProxy(remoteIP) {
+		target.Header.Set("X-Forwarded-For", clientIP)
+		target.Header.Set("X-Forwarded-Proto", proto)
+		target.Header.Set("X-Forwarded-Host", original.Host)
+		target.Header.Set("X-Forwarded-Port", port)
+
+		forwarded := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, original.Host)
+		target.Header.Set("Forwarded", forwarded)
+	} else {
+		if incomingXFF := original.Header.Get("X-Forwarded-For"); incomingXFF != "" {
+			target.Header.Set("X-Forwarded-For", incomingXFF+", "+clientIP)
+		} else {
+			target.Header.Set("X-Forwarded-For", clientIP)
+		}
+
+		if incomingProto := original.Header.Get("X-Forwarded-Proto"); incomingProto == "http" || incomingProto == "https" {
+			proto = incomingProto
+		}
+		target.Header.Set("X-Forwarded-Proto", proto)
+
+		host := original.Host
+		if incomingHost := original.Header.Get("X-Forwarded-Host"); incomingHost != "" {
+			host = incomingHost
+		}
+		target.Header.Set("X-Forwarded-Host", host)
+
+		if incomingPort := original.Header.Get("X-Forwarded-Port"); incomingPort != "" {
+			target.Header.Set("X-Forwarded-Port", incomingPort)
+		} else {
+			target.Header.Set("X-Forwarded-Port", port)
+		}
+
+		newHop := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, host)
+		if incomingForwarded := original.Header.Get("Forwarded"); incomingForwarded != "" {
+			target.Header.Set("Forwarded", incomingForwarded+", "+newHop)
+		} else {
+			target.Header.Set("Forwarded", newHop)
+		}
+	}
+
+	return nil
+}
+
+func (u *httpUpstream) isTrustedProxy(ip net.IP) bool {
+	for _, cidr := range u.trustedProxies {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (u *httpUpstream) resolvePort(req *http.Request) string {
+	_, port, err := net.SplitHostPort(req.Host)
+	if err != nil {
+		if req.TLS != nil {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+
+	return port
 }
 
 func (u *httpUpstream) isBreakerFailure(uerr *UpstreamError) bool {

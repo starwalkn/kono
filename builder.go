@@ -1,6 +1,9 @@
 package kono
 
 import (
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,7 +14,70 @@ import (
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
 	"github.com/starwalkn/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/ratelimit"
 )
+
+const (
+	sourceBuiltin = "builtin"
+	sourceFile    = "file"
+)
+const (
+	builtinPluginsPath     = "/usr/local/lib/kono/plugins/"
+	builtinMiddlewaresPath = "/usr/local/lib/kono/middlewares/"
+)
+
+type RoutingConfigSet struct {
+	Routing RoutingConfig
+	Metrics MetricsConfig
+}
+
+func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
+	var (
+		routingConfig = routingConfigSet.Routing
+		metricsConfig = routingConfigSet.Metrics
+	)
+
+	router := initMinimalRouter(len(routingConfig.Flows), log)
+
+	if metricsConfig.Enabled {
+		switch metricsConfig.Provider {
+		case "prometheus":
+			router.metrics = metric.NewPrometheus()
+		default:
+			router.metrics = metric.NewNop()
+		}
+	}
+
+	if routingConfig.RateLimiter.Enabled {
+		router.rateLimiter = ratelimit.New(routingConfig.RateLimiter.Config)
+
+		err := router.rateLimiter.Start()
+		if err != nil {
+			log.Fatal("failed to start ratelimit feature", zap.Error(err))
+		}
+	}
+
+	trustedProxies := make([]*net.IPNet, 0, len(routingConfig.TrustedProxies))
+	for _, proxy := range routingConfig.TrustedProxies {
+		_, ipnet, err := net.ParseCIDR(proxy)
+		if err != nil {
+			log.Fatal("failed to parse trusted proxy CIDR", zap.Error(err))
+		}
+
+		trustedProxies = append(trustedProxies, ipnet)
+	}
+
+	for _, rcfg := range routingConfig.Flows {
+		flow, err := compileFlow(rcfg, trustedProxies, log)
+		if err != nil {
+			log.Fatal("failed to initialize flow", zap.Error(err))
+		}
+
+		router.Flows = append(router.Flows, flow)
+	}
+
+	return router
+}
 
 func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
 	metrics := metric.NewNop()
@@ -24,37 +90,76 @@ func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
 		aggregator: &defaultAggregator{
 			log: log.Named("aggregator"),
 		},
-		Routes:      make([]Route, 0, routesCount),
+		Flows:       make([]Flow, 0, routesCount),
 		log:         log,
 		metrics:     metrics,
 		rateLimiter: nil,
 	}
 }
 
-func initGlobalMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) (map[string]int, []Middleware) {
-	globalMiddlewareIndices := make(map[string]int)
-	globalMiddlewares := make([]Middleware, 0, len(cfgs))
+func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, log *zap.Logger) (Flow, error) {
+	upstreams := initUpstreams(cfg.Upstreams, trustedProxies)
 
-	for i, cfg := range cfgs {
-		soMiddleware := loadMiddleware(cfg.Path, cfg.Config, log)
-		if soMiddleware == nil {
-			log.Error(
-				"cannot load middleware from .so",
-				zap.String("name", cfg.Name),
-			)
+	aggregation, err := initAggregation(cfg.Aggregation, upstreams)
+	if err != nil {
+		return Flow{}, err
+	}
 
-			if !cfg.CanFailOnLoad {
-				panic("cannot load middleware from .so")
-			}
+	return Flow{
+		Path:                 cfg.Path,
+		Method:               cfg.Method,
+		Aggregation:          aggregation,
+		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
+		Upstreams:            upstreams,
+		Plugins:              initPlugins(cfg.Plugins, log),
+		Middlewares:          initMiddlewares(cfg.Middlewares, log),
+	}, nil
+}
 
+func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
+	middlewares := make([]Middleware, 0, len(cfgs))
+
+	for _, cfg := range cfgs {
+		cfn := func(middleware Middleware) bool {
+			return middleware.Name() == cfg.Name
+		}
+
+		if slices.ContainsFunc(middlewares, cfn) {
 			continue
 		}
 
-		globalMiddlewares = append(globalMiddlewares, soMiddleware)
-		globalMiddlewareIndices[soMiddleware.Name()] = i
+		var soPath string
+
+		switch cfg.Source {
+		case sourceBuiltin:
+			soPath = builtinMiddlewaresPath + cfg.Name + ".so"
+		case sourceFile:
+			pathCopy := cfg.Path
+			if !strings.HasSuffix(cfg.Path, "/") {
+				pathCopy = cfg.Path + "/"
+			}
+
+			soPath = pathCopy + cfg.Name + ".so"
+		default:
+			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
+		}
+
+		soMiddleware := loadMiddleware(soPath, cfg.Config, log)
+		if soMiddleware == nil {
+			log.Error("cannot load middleware",
+				zap.String("name", cfg.Name),
+				zap.String("path", soPath),
+			)
+
+			panic(fmt.Sprintf("cannot load middleware from path '%s'", soPath))
+		}
+
+		log.Info("middleware initialized", zap.String("name", soMiddleware.Name()))
+
+		middlewares = append(middlewares, soMiddleware)
 	}
 
-	return globalMiddlewareIndices, globalMiddlewares
+	return middlewares
 }
 
 func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
@@ -69,20 +174,34 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 			continue
 		}
 
-		soPlugin := loadPlugin(cfg.Path, cfg.Config, log)
-		if soPlugin == nil {
-			log.Error(
-				"cannot load plugin from .so",
-				zap.String("name", cfg.Name),
-				zap.String("path", cfg.Path),
-			)
-			continue
+		var soPath string
+
+		switch cfg.Source {
+		case sourceBuiltin:
+			soPath = builtinPluginsPath + cfg.Name + ".so"
+		case sourceFile:
+			pathCopy := cfg.Path
+			if !strings.HasSuffix(cfg.Path, "/") {
+				pathCopy = cfg.Path + "/"
+			}
+
+			soPath = pathCopy + cfg.Name + ".so"
+		default:
+			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
 		}
 
-		log.Info(
-			"plugin initialized",
-			zap.Any("name", soPlugin.Info()),
-		)
+		soPlugin := loadPlugin(soPath, cfg.Config, log)
+		if soPlugin == nil {
+			log.Error(
+				"cannot load plugin",
+				zap.String("name", cfg.Name),
+				zap.String("path", soPath),
+			)
+
+			panic(fmt.Sprintf("cannot load plugin from path '%s'", soPath))
+		}
+
+		log.Info("plugin initialized", zap.Any("name", soPlugin.Info()))
 
 		plugins = append(plugins, soPlugin)
 	}
@@ -90,7 +209,7 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 	return plugins
 }
 
-func initUpstreams(cfgs []UpstreamConfig) []Upstream {
+func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet) []Upstream {
 	upstreams := make([]Upstream, 0, len(cfgs))
 
 	//nolint:mnd // be configurable in future
@@ -118,6 +237,9 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 				MaxFailures:  cfg.Policy.CircuitBreakerConfig.MaxFailures,
 				ResetTimeout: cfg.Policy.CircuitBreakerConfig.ResetTimeout,
 			},
+			LoadBalancing: LoadBalancingPolicy{
+				Mode: cfg.Policy.LoadBalancingConfig.Mode,
+			},
 		}
 
 		var circuitBreaker *circuitbreaker.CircuitBreaker
@@ -131,14 +253,17 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 		}
 
 		upstream := &httpUpstream{
-			id:                  uuid.NewString(),
-			name:                name,
-			hosts:               cfg.Hosts,
-			method:              cfg.Method,
-			timeout:             cfg.Timeout,
-			forwardHeaders:      cfg.ForwardHeaders,
-			forwardQueryStrings: cfg.ForwardQueryStrings,
-			policy:              policy,
+			id:                uuid.NewString(),
+			name:              name,
+			hosts:             cfg.Hosts,
+			path:              cfg.Path,
+			method:            cfg.Method,
+			timeout:           cfg.Timeout,
+			forwardHeaders:    cfg.ForwardHeaders,
+			forwardQueries:    cfg.ForwardQueries,
+			trustedProxies:    trustedProxies,
+			policy:            policy,
+			activeConnections: make([]int64, len(cfg.Hosts)),
 			client: &http.Client{
 				Transport: transport,
 			},
@@ -151,14 +276,15 @@ func initUpstreams(cfgs []UpstreamConfig) []Upstream {
 	return upstreams
 }
 
+// makeUpstreamName returns the upstream name made up of its method and hosts separated by a hyphen.
 func makeUpstreamName(method string, hosts []string) string {
 	sb := strings.Builder{}
 
-	sb.WriteString(strings.ToUpper(method))
+	sb.WriteString(strings.ToLower(method))
 	sb.WriteString("-")
 
 	for i, host := range hosts {
-		sb.WriteString(host)
+		sb.WriteString(strings.ToLower(host))
 
 		if i != len(hosts)-1 {
 			sb.WriteString("-")
@@ -168,45 +294,80 @@ func makeUpstreamName(method string, hosts []string) string {
 	return sb.String()
 }
 
-func initRoute(cfg RouteConfig, globalMiddlewares []Middleware, globalMiddlewareIndices map[string]int, log *zap.Logger) Route {
-	var (
-		globalMiddlewaresCopy = append([]Middleware(nil), globalMiddlewares...)
-		localMiddlewares      = make([]Middleware, 0, len(cfg.Middlewares))
-	)
-
-	for _, mcfg := range cfg.Middlewares {
-		soMiddleware := loadMiddleware(mcfg.Path, mcfg.Config, log)
-		if soMiddleware == nil {
-			log.Error("cannot load middleware from .so", zap.String("name", mcfg.Name))
-
-			if !mcfg.CanFailOnLoad {
-				panic("cannot load middleware from .so")
-			}
-
-			continue
-		}
-
-		log.Info("middleware initialized", zap.String("name", soMiddleware.Name()), zap.String("route", cfg.Method+" "+cfg.Path))
-
-		if mcfg.Override {
-			if idx, ok := globalMiddlewareIndices[soMiddleware.Name()]; ok {
-				globalMiddlewaresCopy[idx] = soMiddleware
-				continue
-			}
-		}
-
-		localMiddlewares = append(localMiddlewares, soMiddleware)
+func initAggregation(cfg AggregationConfig, upstreams []Upstream) (Aggregation, error) {
+	strategy, err := compileStrategy(cfg.Strategy)
+	if err != nil {
+		return Aggregation{}, err
 	}
 
-	middlewares := append(globalMiddlewaresCopy, localMiddlewares...) //nolint:gocritic // because i am retard
+	agg := Aggregation{
+		BestEffort:        cfg.BestEffort,
+		Strategy:          strategy,
+		ConflictPolicy:    conflictPolicyOverwrite, // default, value used only for merge strategy
+		PreferredUpstream: -1,                      // default, value used only for merge strategy
+	}
 
-	return Route{
-		Path:                 cfg.Path,
-		Method:               cfg.Method,
-		Upstreams:            initUpstreams(cfg.Upstreams),
-		Aggregation:          cfg.Aggregation,
-		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
-		Plugins:              initPlugins(cfg.Plugins, log),
-		Middlewares:          middlewares,
+	if strategy != strategyMerge {
+		return agg, nil
+	}
+
+	conflict, err := compileConflictPolicy(cfg.OnConflict.Policy)
+	if err != nil {
+		return Aggregation{}, err
+	}
+
+	agg.ConflictPolicy = conflict
+
+	if conflict == conflictPolicyPrefer {
+		if cfg.OnConflict.Upstream == "" {
+			return Aggregation{}, errors.New("no upstream specified for on_conflict prefer policy")
+		}
+
+		idx, found := searchUpstream(cfg.OnConflict.Upstream, upstreams)
+		if !found {
+			return Aggregation{}, errors.New("preferred upstream for on_conflict policy does not exist")
+		}
+
+		agg.PreferredUpstream = idx
+	}
+
+	return agg, nil
+}
+
+func searchUpstream(name string, upstreams []Upstream) (int, bool) {
+	for i, u := range upstreams {
+		if u.Name() == name {
+			return i, true
+		}
+	}
+
+	return -1, false
+}
+
+func compileStrategy(s string) (aggregationStrategy, error) {
+	switch s {
+	case "array":
+		return strategyArray, nil
+	case "merge":
+		return strategyMerge, nil
+	case "namespace":
+		return strategyNamespace, nil
+	default:
+		return 0, fmt.Errorf("unknown aggregation strategy: '%q'", s)
+	}
+}
+
+func compileConflictPolicy(p string) (conflictPolicy, error) {
+	switch p {
+	case "overwrite":
+		return conflictPolicyOverwrite, nil
+	case "error":
+		return conflictPolicyError, nil
+	case "first":
+		return conflictPolicyFirst, nil
+	case "prefer":
+		return conflictPolicyPrefer, nil
+	default:
+		return 0, fmt.Errorf("unknown aggregation conflict policy: '%q'", p)
 	}
 }

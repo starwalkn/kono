@@ -33,9 +33,9 @@ func TestAggregator_Merge_Success(t *testing.T) {
 		[]byte(`{"b":3,"c":4}`),
 	}, []*UpstreamError{nil, nil})
 
-	aggregated := agg.aggregate(responses, AggregationConfig{
-		Strategy:            strategyMerge,
-		AllowPartialResults: false,
+	aggregated := agg.aggregate(responses, Aggregation{
+		Strategy:   strategyMerge,
+		BestEffort: false,
 	})
 
 	var got map[string]interface{}
@@ -62,9 +62,9 @@ func TestAggregator_Merge_PartialAllowed(t *testing.T) {
 		[]byte(`invalid json`),
 	}, []*UpstreamError{nil, nil})
 
-	aggregated := agg.aggregate(responses, AggregationConfig{
-		Strategy:            strategyMerge,
-		AllowPartialResults: true,
+	aggregated := agg.aggregate(responses, Aggregation{
+		Strategy:   strategyMerge,
+		BestEffort: true,
 	})
 
 	var got map[string]interface{}
@@ -97,9 +97,9 @@ func TestAggregator_Merge_PartialNotAllowed(t *testing.T) {
 		[]byte(`invalid json`),
 	}, []*UpstreamError{nil, nil})
 
-	aggregated := agg.aggregate(responses, AggregationConfig{
-		Strategy:            strategyMerge,
-		AllowPartialResults: false,
+	aggregated := agg.aggregate(responses, Aggregation{
+		Strategy:   strategyMerge,
+		BestEffort: false,
 	})
 	if aggregated.Data != nil {
 		t.Errorf("expected nil result, got %s", string(aggregated.Data))
@@ -114,9 +114,9 @@ func TestAggregator_Array_Success(t *testing.T) {
 		[]byte(`{"y":2}`),
 	}, []*UpstreamError{nil, nil})
 
-	aggregated := agg.aggregate(responses, AggregationConfig{
-		Strategy:            strategyArray,
-		AllowPartialResults: false,
+	aggregated := agg.aggregate(responses, Aggregation{
+		Strategy:   strategyArray,
+		BestEffort: false,
 	})
 
 	var got []map[string]interface{}
@@ -141,9 +141,9 @@ func TestAggregator_RawResponse(t *testing.T) {
 		[]byte(`{"a":1}`),
 	}, []*UpstreamError{nil})
 
-	aggregated := agg.aggregate(responses, AggregationConfig{
-		Strategy:            "unknown",
-		AllowPartialResults: false,
+	aggregated := agg.aggregate(responses, Aggregation{
+		Strategy:   aggregationStrategy(255),
+		BestEffort: false,
 	})
 	if aggregated.Data == nil {
 		t.Errorf("expected nil result for unknown strategy, got %s", string(aggregated.Data))

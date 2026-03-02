@@ -13,8 +13,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono"
-	"github.com/starwalkn/kono/internal/app"
 	"github.com/starwalkn/kono/internal/logger"
+	"github.com/starwalkn/kono/internal/server"
 )
 
 var serveCmd = &cobra.Command{
@@ -35,7 +35,7 @@ func runServe() error {
 		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = "./kono.json"
+		cfgPath = fallbackConfigPath
 	}
 
 	cfg, err := kono.LoadConfig(cfgPath)
@@ -48,10 +48,10 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	server := app.NewServer(cfg, log)
+	srv := server.New(cfg.Gateway, log)
 
 	go func() {
-		if err = server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err = srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal("server error", zap.Error(err))
 		}
 	}()
@@ -64,7 +64,7 @@ func runServe() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:mnd // internal timeout
 	defer cancel()
 
-	if err = server.Stop(shutdownCtx); err != nil {
+	if err = srv.Stop(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", zap.Error(err))
 	}
 

@@ -8,9 +8,6 @@ go.work.sum
 # Linter configuration file
 .golangci.yml
 
-# Documentation files
-docs
-
 # Built middlewares and plugins
 build/middlewares
 build/plugins

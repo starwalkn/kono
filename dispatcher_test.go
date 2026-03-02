@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/starwalkn/kono/internal/circuitbreaker"
 	"github.com/starwalkn/kono/internal/metric"
 
 	"go.uber.org/zap"
@@ -38,7 +40,7 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{hosts: []string{upstreamA.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
 			&httpUpstream{hosts: []string{upstreamB.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
@@ -74,15 +76,15 @@ func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
-				hosts:               []string{upstreamA.URL},
-				forwardQueryStrings: []string{"foo"},
-				forwardHeaders:      []string{"X-Test"},
-				timeout:             500 * time.Millisecond,
-				log:                 zap.NewNop(),
-				client:              http.DefaultClient,
+				hosts:          []string{upstreamA.URL},
+				forwardQueries: []string{"foo"},
+				forwardHeaders: []string{"X-Test"},
+				timeout:        500 * time.Millisecond,
+				log:            zap.NewNop(),
+				client:         http.DefaultClient,
 			},
 		},
 		MaxParallelUpstreams: maxParallelUpstreams,
@@ -110,7 +112,7 @@ func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -143,7 +145,7 @@ func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -180,7 +182,7 @@ func TestDispatcher_Dispatch_MapStatusCodesPolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -232,7 +234,7 @@ func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -284,7 +286,7 @@ func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -347,7 +349,7 @@ func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
 		metrics: metric.NewNop(),
 	}
 
-	route := &Route{
+	route := &Flow{
 		Upstreams: []Upstream{
 			&httpUpstream{
 				hosts:   []string{upstreamA.URL},
@@ -379,5 +381,180 @@ func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
 
 	if retriesCount > route.Upstreams[0].Policy().RetryPolicy.MaxRetries {
 		t.Errorf("retries count %d exceeds max retries %d", retriesCount, route.Upstreams[0].Policy().RetryPolicy.MaxRetries)
+	}
+}
+
+func TestDispatcher_Dispatch_CircuitBreakerPolicy(t *testing.T) {
+	var (
+		failures    = 0
+		maxFailures = 3
+	)
+
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		failures++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstreamA.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	cb := circuitbreaker.New(maxFailures, 100*time.Millisecond)
+
+	route := &Flow{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				hosts:   []string{upstreamA.URL},
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
+				client:  http.DefaultClient,
+				policy: Policy{
+					// The policy is added for clarity, but we are creating the
+					// circuit breaker separately since the upstream builder is not involved here.
+					CircuitBreaker: CircuitBreakerPolicy{
+						Enabled:      true,
+						MaxFailures:  maxFailures,
+						ResetTimeout: 100 * time.Millisecond,
+					},
+				},
+				circuitBreaker: cb,
+			},
+		},
+		MaxParallelUpstreams: maxParallelUpstreams,
+	}
+
+	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+
+	var results []UpstreamResponse
+
+	for range 5 {
+		responses := d.dispatch(route, originalRequest)
+		results = append(results, responses[0])
+	}
+
+	for i := range maxFailures {
+		if results[i].Err == nil || results[i].Err.Kind != UpstreamBadStatus {
+			t.Errorf("expected %s error for attempt %d, got %v", UpstreamBadStatus, i, results[i].Err)
+		}
+	}
+
+	for i := 3; i < 5; i++ {
+		if results[i].Err == nil || results[i].Err.Kind != UpstreamCircuitOpen {
+			t.Errorf("expected %s error for attempt %d, got %v", UpstreamCircuitOpen, i, results[i].Err)
+		}
+	}
+
+	if failures != maxFailures {
+		t.Errorf("expected %d upstream calls, got %d", maxFailures, failures)
+	}
+}
+
+func TestDispatcher_Dispatch_LoadBalancerPolicy_RoundRobin(t *testing.T) {
+	var callsA, callsB int
+
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsA++
+		w.Write([]byte("A"))
+	}))
+	defer upstreamA.Close()
+
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsB++
+		w.Write([]byte("B"))
+	}))
+	defer upstreamB.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Flow{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				hosts:   []string{upstreamA.URL, upstreamB.URL},
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
+				client:  http.DefaultClient,
+				policy: Policy{
+					LoadBalancing: LoadBalancingPolicy{Mode: LBModeRoundRobin},
+				},
+			},
+		},
+		MaxParallelUpstreams: 1,
+	}
+
+	for range 4 {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+		_ = d.dispatch(route, req)
+	}
+
+	if callsA != 2 || callsB != 2 {
+		t.Errorf("expected round robin distribution 2/2, got A=%d B=%d", callsA, callsB)
+	}
+}
+
+func TestDispatcher_Dispatch_LoadBalancerPolicy_LeastConns(t *testing.T) {
+	var callsA, callsB int
+
+	// Slow server
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsA++
+		time.Sleep(100 * time.Millisecond)
+		w.Write([]byte("A"))
+	}))
+	defer upstreamA.Close()
+
+	// Fast server
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsB++
+		w.Write([]byte("B"))
+	}))
+	defer upstreamB.Close()
+
+	d := &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+
+	route := &Flow{
+		Upstreams: []Upstream{
+			&httpUpstream{
+				hosts:   []string{upstreamA.URL, upstreamB.URL},
+				method:  http.MethodGet,
+				timeout: 500 * time.Millisecond,
+				log:     zap.NewNop(),
+				client:  http.DefaultClient,
+				policy: Policy{
+					LoadBalancing: LoadBalancingPolicy{Mode: LBModeLeastConns},
+				},
+				activeConnections: make([]int64, 2),
+			},
+		},
+		MaxParallelUpstreams: maxParallelUpstreams,
+	}
+
+	var wg sync.WaitGroup
+
+	for range 10 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+			_ = d.dispatch(route, req)
+		}()
+
+		time.Sleep(20 * time.Millisecond)
+	}
+	wg.Wait()
+
+	if callsB <= callsA {
+		t.Errorf("expected fast upstream (B) to receive more traffic, got A=%d B=%d", callsA, callsB)
 	}
 }
