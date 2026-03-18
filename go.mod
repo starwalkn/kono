@@ -3,7 +3,6 @@ module github.com/starwalkn/kono
 go 1.25.4
 
 require (
-	github.com/BurntSushi/toml v1.6.0
 	github.com/VictoriaMetrics/metrics v1.41.2
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -24,7 +23,6 @@ require (
 )
 
 require (
-	github.com/awalterschulze/gographviz v2.0.3+incompatible // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect

@@ -481,7 +481,7 @@ func TestDispatcher_Dispatch_LoadBalancerPolicy_RoundRobin(t *testing.T) {
 				log:     zap.NewNop(),
 				client:  http.DefaultClient,
 				policy: Policy{
-					LoadBalancing: LoadBalancingPolicy{Mode: LBModeRoundRobin},
+					LoadBalancing: LoadBalancingPolicy{Mode: lbModeRoundRobin},
 				},
 			},
 		},
@@ -530,7 +530,7 @@ func TestDispatcher_Dispatch_LoadBalancerPolicy_LeastConns(t *testing.T) {
 				log:     zap.NewNop(),
 				client:  http.DefaultClient,
 				policy: Policy{
-					LoadBalancing: LoadBalancingPolicy{Mode: LBModeLeastConns},
+					LoadBalancing: LoadBalancingPolicy{Mode: lbModeLeastConns},
 				},
 				activeConnections: make([]int64, 2),
 			},

@@ -19,14 +19,15 @@ const (
 	luaMsgExtraBufSize = 1024
 )
 
-type LuaJSONRequest struct {
-	RequestID string      `json:"request_id"`
-	Method    string      `json:"method"`
-	Path      string      `json:"path"`
-	Query     string      `json:"query"`
-	Headers   http.Header `json:"headers"`
-	Body      []byte      `json:"body"`
-	ClientIP  string      `json:"client_ip"`
+type LuaJSONData struct {
+	RequestID  string      `json:"request_id"`
+	Method     string      `json:"method"`
+	Path       string      `json:"path"`
+	Query      string      `json:"query"`
+	Headers    http.Header `json:"headers"`
+	Body       []byte      `json:"body"`
+	ClientIP   string      `json:"client_ip"`
+	ScriptPath string      `json:"script_path"`
 }
 
 type LuaJSONResponse struct {
@@ -34,5 +35,5 @@ type LuaJSONResponse struct {
 	Status int    `json:"status"`
 	Error  string `json:"error"`
 
-	LuaJSONRequest
+	LuaJSONData
 }

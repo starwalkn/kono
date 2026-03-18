@@ -2,6 +2,11 @@ local ffi = require("ffi")
 local log = require("log")
 local cjson = require("cjson")
 
+local sandbox = require('sandbox')
+local loader = require('loader')
+local manager = require('manager')
+local executor = require('executor')
+
 log.usecolor = false
 
 -- ================= C DEFINITIONS =================
@@ -81,6 +86,40 @@ end
 setup_signal(SIGTERM)
 setup_signal(SIGINT)
 
+-- ================= REQUEST PROCESSING =================
+
+local function process_request(request)
+    local script, err = manager.get(request.script_path)
+    if not script then
+        return {
+            request_id = request.request_id,
+            action = "error",
+            error = err
+        }
+    end
+
+    local ok, result = executor.run(script.handle, request)
+    if not ok then
+        return {
+            request_id = request.request_id,
+            action = "error",
+            error = result
+        }
+    end
+
+    if type(result) ~= "table" then
+        return {
+            request_id = request.request_id,
+            action = "error",
+            error = "invalid response"
+        }
+    end
+
+    result.action = result.action or "continue"
+
+    return result
+end
+
 -- ================= MASTER INITIALIZATION =================
 
 local master_pid = ffi.C.getpid()
@@ -118,7 +157,6 @@ log.info("master pid:", master_pid)
 log.info("listening on:", socket_path)
 
 -- ================= WORKER LOOP =================
-
 local function worker_loop()
     log.info("worker started:", ffi.C.getpid())
 
@@ -142,40 +180,20 @@ local function worker_loop()
 
             if n > 0 then
                 local req_json = ffi.string(buf, n)
-                local request = cjson.decode(req_json)
 
-                log.info("worker accepted request with request_id " .. request.request_id)
+                local ok, request = pcall(cjson.decode, req_json)
+                if ok then
+                    log.info("request:" .. request.request_id)
 
-                -- === REQUEST MODIFICATION START ===
+                    request.headers["X-Kono-Modified"] = 1
 
-                -- request looks like:
-                --
-                -- {
-                --     "request_id": "abc123",
-                --     "method": "POST",
-                --     "path": "/api/user",
-                --     "query": "a=1&b=2",
-                --     "headers": { ... },
-                --     "body": "...",
-                --     "client_ip": "10.0.0.1"
-                -- }
+                    local response = process_request(request)
+                    local resp_json = cjson.encode(response)
 
-                request.headers["X-Kono-Modified"] = 1
-
-                -- example of body modifying
-
-                -- if request.body and request.body ~= "" then
-                --     local body_table = cjson.decode(request.body)
-                --     body_table.modified_by = "luaworker"
-                --     request.body = cjson.encode(body_table)
-                -- end
-
-                -- === REQUEST MODIFICATION END ===
-
-                local resp_json = cjson.encode(request)
-
-                ffi.C.write(client_fd, resp_json, #resp_json)
-                log.info("worker returned repsonse for request with request_id " .. request.request_id)
+                    ffi.C.write(client_fd, resp_json, #resp_json)
+                else
+                    log.error("invalid json")
+                end
             end
 
             ffi.C.close(client_fd)

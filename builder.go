@@ -21,10 +21,13 @@ const (
 	sourceBuiltin = "builtin"
 	sourceFile    = "file"
 )
+
 const (
 	builtinPluginsPath     = "/usr/local/lib/kono/plugins/"
 	builtinMiddlewaresPath = "/usr/local/lib/kono/middlewares/"
 )
+
+const extSo = ".so"
 
 type RoutingConfigSet struct {
 	Routing RoutingConfig
@@ -132,14 +135,14 @@ func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
 
 		switch cfg.Source {
 		case sourceBuiltin:
-			soPath = builtinMiddlewaresPath + cfg.Name + ".so"
+			soPath = builtinMiddlewaresPath + cfg.Name + extSo
 		case sourceFile:
 			pathCopy := cfg.Path
 			if !strings.HasSuffix(cfg.Path, "/") {
 				pathCopy = cfg.Path + "/"
 			}
 
-			soPath = pathCopy + cfg.Name + ".so"
+			soPath = pathCopy + cfg.Name + extSo
 		default:
 			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
 		}
@@ -178,14 +181,14 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 
 		switch cfg.Source {
 		case sourceBuiltin:
-			soPath = builtinPluginsPath + cfg.Name + ".so"
+			soPath = builtinPluginsPath + cfg.Name + extSo
 		case sourceFile:
 			pathCopy := cfg.Path
 			if !strings.HasSuffix(cfg.Path, "/") {
 				pathCopy = cfg.Path + "/"
 			}
 
-			soPath = pathCopy + cfg.Name + ".so"
+			soPath = pathCopy + cfg.Name + extSo
 		default:
 			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
 		}

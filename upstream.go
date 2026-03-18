@@ -158,7 +158,7 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 
 	selectedHost := u.selectHost()
 
-	if u.policy.LoadBalancing.Mode == LBModeLeastConns {
+	if u.policy.LoadBalancing.Mode == lbModeLeastConns {
 		atomic.AddInt64(&u.activeConnections[selectedHost], 1)
 		defer atomic.AddInt64(&u.activeConnections[selectedHost], -1)
 	}
@@ -283,10 +283,10 @@ func (u *httpUpstream) selectHost() int64 {
 	var selectedHost int64
 
 	switch u.policy.LoadBalancing.Mode {
-	case LBModeRoundRobin:
+	case lbModeRoundRobin:
 		idx := atomic.AddInt64(&u.currentHostIdx, 1)
 		selectedHost = idx % int64(len(u.hosts))
-	case LBModeLeastConns:
+	case lbModeLeastConns:
 		var (
 			best           int64
 			minActiveConns int64 = math.MaxInt64

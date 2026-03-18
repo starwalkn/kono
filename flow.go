@@ -20,6 +20,12 @@ type Aggregation struct {
 
 type aggregationStrategy uint8
 
+const (
+	strategyMerge aggregationStrategy = iota
+	strategyArray
+	strategyNamespace
+)
+
 func (s aggregationStrategy) String() string {
 	switch s {
 	case strategyArray:
@@ -35,6 +41,13 @@ func (s aggregationStrategy) String() string {
 
 type conflictPolicy uint8
 
+const (
+	conflictPolicyOverwrite conflictPolicy = iota
+	conflictPolicyError
+	conflictPolicyFirst
+	conflictPolicyPrefer
+)
+
 func (c conflictPolicy) String() string {
 	switch c {
 	case conflictPolicyOverwrite:
@@ -49,16 +62,3 @@ func (c conflictPolicy) String() string {
 		return "unknown"
 	}
 }
-
-const (
-	strategyMerge aggregationStrategy = iota
-	strategyArray
-	strategyNamespace
-)
-
-const (
-	conflictPolicyOverwrite conflictPolicy = iota
-	conflictPolicyError
-	conflictPolicyFirst
-	conflictPolicyPrefer
-)

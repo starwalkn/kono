@@ -32,10 +32,10 @@ type CircuitBreakerPolicy struct {
 }
 
 const (
-	LBModeRoundRobin = "round_robin"
-	LBModeLeastConns = "least_conns"
+	lbModeRoundRobin = "round_robin"
+	lbModeLeastConns = "least_conns"
 )
 
 type LoadBalancingPolicy struct {
-	Mode string // Round Robin, Least Connections, etc...
+	Mode string // round_robin | least_conns
 }

@@ -109,7 +109,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		for _, script := range matchedFlow.Scripts {
 			if script.Source == sourceFile {
-				luaResp, err := r.luaSendGet(req.Context(), req, requestID)
+				luaResp, err := r.luaSendGet(req.Context(), req, requestID, script.Path)
 				if err != nil {
 					r.log.Error("failed to send-get request to lua worker", zap.String("request_id", requestID), zap.Error(err))
 					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
@@ -385,7 +385,7 @@ func errorPriority(e ClientError) int {
 //
 // Action is a special field from LuaWorker that indicates the latest gateway action
 // with a request and can have one of two values - "continue" or "abort".
-func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID string) (*LuaJSONResponse, error) {
+func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID, scriptPath string) (*LuaJSONResponse, error) {
 	dialer := &net.Dialer{}
 
 	conn, err := dialer.DialContext(ctx, "unix", luaWorkerSocketPath)
@@ -394,14 +394,15 @@ func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID st
 	}
 	defer conn.Close()
 
-	luaReq := LuaJSONRequest{
-		RequestID: requestID,
-		Method:    req.Method,
-		Path:      req.URL.Path,
-		Query:     req.URL.RawQuery,
-		Headers:   req.Header.Clone(),
-		Body:      nil,
-		ClientIP:  extractClientIP(req),
+	luaReq := LuaJSONData{
+		RequestID:  requestID,
+		Method:     req.Method,
+		Path:       req.URL.Path,
+		Query:      req.URL.RawQuery,
+		Headers:    req.Header.Clone(),
+		Body:       nil,
+		ClientIP:   extractClientIP(req),
+		ScriptPath: scriptPath,
 	}
 
 	msg, err := json.Marshal(&luaReq)
