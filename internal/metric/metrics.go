@@ -7,7 +7,7 @@ type FailReason string
 const (
 	FailReasonGatewayError    FailReason = "gateway_error"
 	FailReasonUpstreamError   FailReason = "upstream_error"
-	FailReasonNoMatchedRoute  FailReason = "no_matched_route"
+	FailReasonNoMatchedFlow   FailReason = "no_matched_flow"
 	FailReasonPolicyViolation FailReason = "policy_violation"
 	FailReasonBodyTooLarge    FailReason = "body_too_large"
 	FailReasonUnknown         FailReason = "unknown"

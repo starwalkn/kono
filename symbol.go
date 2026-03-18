@@ -30,7 +30,7 @@ func loadSymbol[T any](path, symbol string, log *zap.Logger) T {
 	}
 
 	pl := factory
-	log.Info("symbol loaded successfully")
+	log.Debug("symbol loaded successfully")
 
 	return pl
 }

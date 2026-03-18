@@ -18,7 +18,7 @@ import (
 const maxBodySize = 5 << 20 // 5MB
 
 type dispatcher interface {
-	dispatch(route *Route, original *http.Request) []UpstreamResponse
+	dispatch(route *Flow, original *http.Request) []UpstreamResponse
 }
 
 type defaultDispatcher struct {
@@ -32,8 +32,8 @@ type defaultDispatcher struct {
 // required body, status code mapping, max response size), updates metrics, and collects
 // the responses into a slice. Any policy violations or request errors are wrapped in
 // UpstreamError. The dispatcher waits for all upstream requests to complete before returning.
-func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []UpstreamResponse {
-	results := make([]UpstreamResponse, len(route.Upstreams))
+func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []UpstreamResponse {
+	results := make([]UpstreamResponse, len(flow.Upstreams))
 
 	originalBody, readErr := io.ReadAll(io.LimitReader(original.Body, maxBodySize+1))
 	if readErr != nil {
@@ -51,10 +51,10 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 	var (
 		wg  = sync.WaitGroup{}
-		sem = semaphore.NewWeighted(route.MaxParallelUpstreams)
+		sem = semaphore.NewWeighted(flow.MaxParallelUpstreams)
 	)
 
-	for i, u := range route.Upstreams {
+	for i, u := range flow.Upstreams {
 		wg.Add(1)
 
 		go func(i int, u Upstream, originalBody []byte) {
@@ -117,7 +117,7 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 				}
 			}
 
-			d.metrics.UpdateUpstreamLatency(route.Path, route.Method, u.Name(), time.Since(start))
+			d.metrics.UpdateUpstreamLatency(flow.Path, flow.Method, u.Name(), time.Since(start))
 
 			results[i] = *resp
 		}(i, u, originalBody)
