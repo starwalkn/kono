@@ -31,9 +31,9 @@ type LuaJSONData struct {
 }
 
 type LuaJSONResponse struct {
-	Action string `json:"action"`
-	Status int    `json:"status"`
-	Error  string `json:"error"`
+	Action     string `json:"action"`
+	HTTPStatus int    `json:"http_status"`
+	Error      string `json:"error"`
 
 	LuaJSONData
 }

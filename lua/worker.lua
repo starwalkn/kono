@@ -90,6 +90,7 @@ local function process_request(request)
         return {
             request_id = request.request_id,
             action = "abort",
+            http_status = 500,
             error = err
         }
     end
@@ -99,14 +100,16 @@ local function process_request(request)
         return {
             request_id = request.request_id,
             action = "abort",
+            http_status = 500,
             error = result
         }
     end
 
-    if type(result) ~= "table" then
+    if type(result) ~= "table" or not result.action then
         return {
             request_id = request.request_id,
             action = "abort",
+            http_status = 500,
             error = "invalid response"
         }
     end

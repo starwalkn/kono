@@ -141,7 +141,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					continue
 				case luaActionAbort:
 					r.log.Error("lua worker aborted request")
-					WriteError(w, ClientErrAborted, luaResp.Status)
+					WriteError(w, ClientErrAborted, luaResp.HTTPStatus)
 
 					return
 				default:
