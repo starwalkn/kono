@@ -97,10 +97,6 @@ func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []Upstr
 				errs = append(errs, errors.New("empty body not allowed by upstream policy"))
 			}
 
-			if mapped, ok := upstreamPolicy.MapStatusCodes[resp.Status]; ok {
-				resp.Status = mapped
-			}
-
 			if len(upstreamPolicy.AllowedStatuses) > 0 && !slices.Contains(upstreamPolicy.AllowedStatuses, resp.Status) {
 				errs = append(errs, fmt.Errorf("status %d not allowed by upstream policy", resp.Status))
 			}

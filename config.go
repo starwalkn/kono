@@ -107,10 +107,9 @@ type MiddlewareConfig struct {
 }
 
 type PolicyConfig struct {
-	AllowedStatuses     []int       `yaml:"allowed_status_codes"`
-	RequireBody         bool        `yaml:"allow_empty_body"`
-	MapStatusCodes      map[int]int `yaml:"map_status_codes"`
-	MaxResponseBodySize int64       `yaml:"max_response_body_size"`
+	AllowedStatuses     []int `yaml:"allowed_status_codes"`
+	RequireBody         bool  `yaml:"allow_empty_body"`
+	MaxResponseBodySize int64 `yaml:"max_response_body_size"`
 
 	RetryConfig          RetryConfig          `yaml:"retry"`
 	CircuitBreakerConfig CircuitBreakerConfig `yaml:"circuit_breaker"`

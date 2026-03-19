@@ -7,7 +7,6 @@ import "time"
 type Policy struct {
 	AllowedStatuses     []int
 	RequireBody         bool
-	MapStatusCodes      map[int]int
 	MaxResponseBodySize int64
 
 	RetryPolicy    RetryPolicy

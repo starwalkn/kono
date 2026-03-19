@@ -228,7 +228,6 @@ func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet) []Upstrea
 		policy := Policy{
 			AllowedStatuses:     cfg.Policy.AllowedStatuses,
 			RequireBody:         cfg.Policy.RequireBody,
-			MapStatusCodes:      cfg.Policy.MapStatusCodes,
 			MaxResponseBodySize: cfg.Policy.MaxResponseBodySize,
 			RetryPolicy: RetryPolicy{
 				MaxRetries:      cfg.Policy.RetryConfig.MaxRetries,

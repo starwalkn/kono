@@ -171,52 +171,6 @@ func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
 	}
 }
 
-func TestDispatcher_Dispatch_MapStatusCodesPolicy(t *testing.T) {
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer upstreamA.Close()
-
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
-
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					MapStatusCodes: map[int]int{
-						404: 502, // NotFound to InternalServerError
-					},
-				},
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
-
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-
-	results := d.dispatch(route, originalRequest)
-
-	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
-	}
-
-	if results[0].Err != nil {
-		t.Errorf("expected no error, got %v", results[0].Err)
-	}
-
-	if results[0].Status != 502 {
-		t.Errorf("expected status 502, got %d", results[0].Status)
-	}
-}
-
 func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
 	var (
 		responseText        string = "abcdefghijklmnopqrstuvwxyz"

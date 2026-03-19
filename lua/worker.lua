@@ -1,11 +1,7 @@
 local ffi = require("ffi")
 local log = require("log")
 local cjson = require("cjson")
-
-local sandbox = require('sandbox')
-local loader = require('loader')
 local manager = require('manager')
-local executor = require('executor')
 
 log.usecolor = false
 
@@ -93,16 +89,16 @@ local function process_request(request)
     if not script then
         return {
             request_id = request.request_id,
-            action = "error",
+            action = "abort",
             error = err
         }
     end
 
-    local ok, result = executor.run(script.handle, request)
+    local ok, result = manager.run(script.handle, request)
     if not ok then
         return {
             request_id = request.request_id,
-            action = "error",
+            action = "abort",
             error = result
         }
     end
@@ -110,7 +106,7 @@ local function process_request(request)
     if type(result) ~= "table" then
         return {
             request_id = request.request_id,
-            action = "error",
+            action = "abort",
             error = "invalid response"
         }
     end
