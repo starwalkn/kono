@@ -31,9 +31,9 @@ RUN apt-get update && apt-get install -y \
 # LuaJIT dependencies
 RUN luarocks --lua-version=5.1 install lua-cjson
 
-COPY lua /usr/local/lib/kono/luaworker
+COPY lumos /usr/local/lib/kono/lumos
 
-ENV LUA_PATH="/usr/local/lib/kono/luaworker/?.lua;;"
+ENV LUA_PATH="/usr/local/lib/kono/lumos/?.lua;;"
 
 RUN mkdir -p /tmp
 

@@ -5,8 +5,8 @@ A lightweight, modular, and high-performance <strong>API Gateway</strong> for mo
 </p>
 
 <p align="center">
-Kono Gateway provides advanced routing, request fan-out, response aggregation,
-pluggable middleware, and extensibility through custom <code>.so</code> plugins.
+Kono provides advanced routing, request fan-out, response aggregation,
+pluggable middleware, Lua scripting, and extensibility through custom <code>.so</code> plugins.
 </p>
 
 <p align="center">
@@ -18,18 +18,19 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 ## ✨ Features
 
 - 🚀 High-performance HTTP reverse proxy
-- 🔀 Request fan-out & response aggregation
-- 🧩 Dynamic `.so` plugin system
-- 🛠 Request & response mutation
-- 🔁 Retry, circuit breaker & status mapping
-- 📊 Metrics support (Prometheus-compatible)
+- 🔀 Request fan-out & response aggregation (merge, array, namespace)
+- 🧩 Dynamic `.so` plugin system (request & response phase)
+- 📜 Lua scripting via **Lumos** (LuaJIT over Unix socket)
+- 🔗 Path parameter extraction and forwarding
+- 🔁 Retry, circuit breaker & load balancing (round-robin, least-conns)
+- 📊 Prometheus metrics with circuit breaker state tracking
+- 🛡 Rate limiting & trusted proxy support
 - 📦 YAML-based configuration
 - 🐳 Docker-ready
 
 ---
 
 ## 📦 Installation (Local Build)
-
 ```bash
 git clone https://github.com/starwalkn/kono.git
 cd kono
@@ -40,16 +41,13 @@ make all GOOS=<YOUR_OS> GOARCH=<YOUR_ARCH>
 ```
 
 Available CLI commands:
-
 ```bash
-kono serve
-kono validate
-kono viz
+kono serve      # start the gateway
+kono validate   # validate configuration file
+kono viz        # visualize flow configuration
 ```
 
-Instead of defining the `KONO_CONFIG` environment variable, you can also explicitly 
-pass the path to the configuration file using the `--config` flag:
-
+Instead of the `KONO_CONFIG` environment variable, you can pass the config path explicitly:
 ```bash
 kono --config /etc/kono/config.yaml serve
 ```
@@ -57,7 +55,6 @@ kono --config /etc/kono/config.yaml serve
 ---
 
 ## 🐳 Run with Docker
-
 ```bash
 docker build -f build/Dockerfile -t kono:local .
 
@@ -72,16 +69,15 @@ docker run \
 
 ## ⚙️ Configuration
 
-⚠️ Kono only supports YAML configuration files. JSON/TOML is not supported to avoid inconsistencies and reduce
-complexity.
+⚠️ Kono only supports YAML. JSON/TOML is not supported.
 
-It looks for configuration in:
+Config is resolved in this order:
 
-1. `KONO_CONFIG` environment variable
-2. `/etc/kono/config.yaml` (if `KONO_CONFIG` is empty)
+1. `--config` flag
+2. `KONO_CONFIG` environment variable
+3. `/etc/kono/config.yaml`
 
-### Example Configuration (v1)
-
+### Full Example (v1)
 ```yaml
 schema: v1
 debug: true
@@ -90,136 +86,198 @@ gateway:
   server:
     port: 7805
     timeout: 20s
+    pprof:
+      enabled: true
+      port: 6060
     metrics:
       enabled: true
       provider: prometheus
 
   routing:
+    trusted_proxies:
+      - 127.0.0.1/32
+      - 10.0.0.0/8
     rate_limiter:
       enabled: true
       config:
-        limit: 10
+        limit: 100
         window: 1s
+
     flows:
-      - path: /api/users
+      - path: /api/v1/users/{user_id}/orders/{order_id}
         method: GET
         aggregation:
-          strategy: merge
-          allow_partial_results: true
-        max_parallel_upstreams: 1
+          best_effort: true
+          strategy: namespace
+        max_parallel_upstreams: 10
         plugins:
           - name: snakeify
-            path: /kono/plugins/snakeify.so
+            source: builtin
         middlewares:
           - name: recoverer
-            path: /kono/middlewares/recoverer.so
-            config:
-              enabled: false
+            source: builtin
           - name: logger
-            path: /kono/middlewares/logger.so
+            source: builtin
             config:
-              enabled: false
+              enabled: true
+        scripts:
+          - source: file
+            path: /etc/kono/scripts/auth.lua
         upstreams:
-          - hosts: http://user-service.local
-            path: v1/users
+          - name: users
+            hosts: http://user-service.local
+            path: /v1/users/{user_id}
             method: GET
             timeout: 3s
-            forward_queries: [ "*" ]
-            forward_headers: [ "X-*" ]
+            forward_queries: ["*"]
+            forward_headers: ["X-*"]
             policy:
-              allowed_statuses: [ 200, 404 ]
+              allowed_statuses: [200, 404]
               require_body: true
-              map_status_codes:
-                403: 404
               max_response_body_size: 4096
+              header_blacklist: ["X-Internal-Token"]
               retry:
                 max_retries: 3
-                retry_on_statuses: [ 500, 502, 503 ]
-                backoff_delay: 1s
+                retry_on_statuses: [500, 502, 503]
+                backoff_delay: 500ms
               circuit_breaker:
                 enabled: true
                 max_failures: 5
                 reset_timeout: 2s
 
-      - path: /api/domains
-        method: GET
-        aggregation:
-          strategy: array
-          allow_partial_results: true
-        max_parallel_upstreams: 3
-        plugins:
-          - name: camelify
-            path: /kono/plugins/camelify.so
-        middlewares:
-          - name: logger
-            path: /kono/middlewares/logger.so
-            config:
-              enabled: false
-        upstreams:
-          - hosts:
-              - http://domain-service-1.local
-              - http://domain-service-2.local
-            path: v1/domains
+          - name: orders
+            hosts:
+              - http://orders-service-1.local
+              - http://orders-service-2.local
+            path: /v1/orders/{order_id}
             method: GET
             timeout: 3s
-            forward_queries: [ "*" ]
-            forward_headers: [ "X-For*" ]
+            forward_queries: ["*"]
+            forward_headers: ["X-*"]
+            forward_params: ["user_id"]   # forwarded as ?user_id=... to upstream
             policy:
+              allowed_statuses: [200, 404]
+              require_body: true
+              retry:
+                max_retries: 2
+                retry_on_statuses: [500, 503]
+                backoff_delay: 250ms
               circuit_breaker:
                 enabled: true
                 max_failures: 5
                 reset_timeout: 2s
               load_balancing:
-                mode: round_robin
-          - hosts:
-              - http://profile-service-1.local
-              - http://profile-service-2.local
-              - http://profile-service-3.local
-            path: v1/details
-            method: GET
-            timeout: 2s
-            forward_queries: [ "id" ]
-            forward_headers: [ "X-For" ]
-            policy:
-              circuit_breaker:
-                enabled: true
-                max_failures: 5
-                reset_timeout: 2s
-              load_balancing:
-                mode: least_conns
-
+                mode: round_robin   # round_robin | least_conns
 ```
+
+---
+
+## 🔀 Aggregation Strategies
+
+| Strategy | Description |
+|---|---|
+| `merge` | Merges JSON objects from all upstreams into one. Supports conflict policies: `overwrite`, `first`, `error`, `prefer`. |
+| `array` | Wraps all upstream responses in a JSON array. |
+| `namespace` | Places each upstream response under its name as a key: `{"users": {...}, "orders": {...}}`. |
+
+`best_effort: true` allows returning partial results when some upstreams fail (HTTP 206).
+
+---
+
+## 🔗 Path Parameters
+
+Kono supports path parameters in flow and upstream paths:
+```yaml
+flows:
+  - path: /api/v1/transactions/{transaction_id}
+    upstreams:
+      - name: transactions
+        path: /transactions/{transaction_id}   # expanded automatically
+        forward_params: ["transaction_id"]     # also forwarded as query param
+```
+
+Parameters are extracted by the router and available to all upstreams in the flow.
 
 ---
 
 ## 🔌 Plugins
 
-Kono supports dynamic Go plugins compiled as `.so`:
-
+Plugins are compiled as Go `.so` files and loaded at startup:
 ```bash
 CGO_ENABLED=1 go build -buildmode=plugin -o myplugin.so ./plugins/myplugin
 ```
 
-Plugins can:
+Two plugin phases are supported:
 
-- Modify `*http.Request`
-- Modify aggregated `*http.Response`
-- Inject headers
-- Validate requests
-- Short-circuit responses
+- **Request phase** — runs before upstream dispatch. Can modify request context.
+- **Response phase** — runs after aggregation. Can modify response headers and body.
+
+Plugins can be loaded from builtin paths or custom file paths:
+```yaml
+plugins:
+  - name: myplugin
+    source: file
+    path: /etc/kono/plugins/
+```
 
 > ⚠️ Plugins must be compiled with the exact same Go version as the gateway binary.
 
 ---
 
-## 🧪 Validate Configuration
+## 📜 Lumos (Lua Scripting)
 
+Lumos allows request modification via LuaJIT scripts running as sidecar processes in the same container, communicating with Kono over Unix sockets — no extra network overhead.
+```yaml
+scripts:
+  - source: file
+    path: /etc/kono/scripts/auth.lua
+```
+
+A Lumos script returns one of two actions:
+
+- `continue` — proceed with (optionally modified) request
+- `abort` — reject the request with a specific HTTP status
+
+---
+
+## 📊 Metrics
+
+When `metrics.provider: prometheus` is enabled, metrics are available at `/metrics`:
+
+| Metric | Description |
+|---|---|
+| `kono_requests_total` | Total requests by route, method, status |
+| `kono_requests_duration_seconds` | End-to-end request latency |
+| `kono_requests_in_flight` | Current in-flight requests |
+| `kono_failed_requests_total` | Rejected requests by reason |
+| `kono_upstream_requests_total` | Requests dispatched to upstreams |
+| `kono_upstream_errors_total` | Upstream errors by kind |
+| `kono_upstream_latency_seconds` | Upstream response latency |
+| `kono_upstream_retries_total` | Retry attempts per upstream |
+| `kono_circuit_breaker_state` | Circuit breaker state: 0=closed, 1=open, 2=half-open |
+
+---
+
+## 🏥 Health Check
+
+`GET /__health`
+
+Returns `200 OK` when the gateway is running. The `__` prefix avoids conflicts with user-defined flow paths.
+
+---
+
+## 🔍 Profiling
+
+When `pprof.enabled: true`, profiling endpoints are available at `localhost:<pprof.port>/debug/pprof/`.
+
+---
+
+## 🧪 Validate Configuration
 ```bash
 kono validate
 ```
 
 Or inside Docker:
-
 ```bash
 docker run \
   -v $(pwd)/kono.yaml:/app/kono.yaml \

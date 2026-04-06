@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -58,6 +60,8 @@ func runServe() error {
 
 	log.Info("server started")
 
+	stopPprof := startPprofServer(cfg.Gateway.Server.Pprof, log)
+
 	<-ctx.Done()
 	log.Info("shutdown signal received")
 
@@ -68,7 +72,48 @@ func runServe() error {
 		log.Error("graceful shutdown failed", zap.Error(err))
 	}
 
+	stopPprof(shutdownCtx)
+
 	log.Info("server stopped")
 
 	return nil
+}
+
+func startPprofServer(cfg kono.PprofConfig, log *zap.Logger) func(ctx context.Context) {
+	if !cfg.Enabled {
+		return func(_ context.Context) {}
+	}
+
+	srv := buildPprofServer(cfg.Port)
+
+	go func() {
+		log.Info("pprof listener started", zap.Int("port", cfg.Port))
+
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("pprof server error", zap.Error(err))
+		}
+	}()
+
+	return func(ctx context.Context) {
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Error("pprof server shutdown error", zap.Error(err))
+		}
+	}
+}
+
+func buildPprofServer(port int) *http.Server {
+	pprofMux := http.NewServeMux()
+	pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+	pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	return &http.Server{
+		Addr:         fmt.Sprintf("localhost:%d", port),
+		Handler:      pprofMux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 }

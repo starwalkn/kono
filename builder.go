@@ -5,94 +5,79 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"slices"
-	"strings"
-	"time"
 
-	"github.com/google/uuid"
+	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 
-	"github.com/starwalkn/kono/internal/circuitbreaker"
 	"github.com/starwalkn/kono/internal/metric"
 	"github.com/starwalkn/kono/internal/ratelimit"
 )
 
-const (
-	sourceBuiltin = "builtin"
-	sourceFile    = "file"
-)
-
-const (
-	builtinPluginsPath     = "/usr/local/lib/kono/plugins/"
-	builtinMiddlewaresPath = "/usr/local/lib/kono/middlewares/"
-)
-
-const extSo = ".so"
-
 type RoutingConfigSet struct {
+	Lumos   LumosConfig
 	Routing RoutingConfig
 	Metrics MetricsConfig
 }
 
-func NewRouter(routingConfigSet RoutingConfigSet, log *zap.Logger) *Router {
-	var (
-		routingConfig = routingConfigSet.Routing
-		metricsConfig = routingConfigSet.Metrics
-	)
+func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.Registry) {
+	routing := cfgSet.Routing
 
-	router := initMinimalRouter(len(routingConfig.Flows), log)
+	metrics, reg := initMetrics(cfgSet.Metrics)
 
-	if metricsConfig.Enabled {
-		switch metricsConfig.Provider {
-		case "prometheus":
-			router.metrics = metric.NewPrometheus()
-		default:
-			router.metrics = metric.NewNop()
-		}
-	}
+	router := initMinimalRouter(len(routing.Flows), metrics, log)
+	router.rateLimiter = initRateLimiter(routing.RateLimiter, log)
+	router.lumos = initLumos(cfgSet.Lumos)
 
-	if routingConfig.RateLimiter.Enabled {
-		router.rateLimiter = ratelimit.New(routingConfig.RateLimiter.Config)
+	trustedProxies := parseTrustedProxies(cfgSet.Routing.TrustedProxies, log)
 
-		err := router.rateLimiter.Start()
+	for _, fcfg := range routing.Flows {
+		flow, err := compileFlow(fcfg, trustedProxies, metrics, log)
 		if err != nil {
-			log.Fatal("failed to start ratelimit feature", zap.Error(err))
-		}
-	}
-
-	trustedProxies := make([]*net.IPNet, 0, len(routingConfig.TrustedProxies))
-	for _, proxy := range routingConfig.TrustedProxies {
-		_, ipnet, err := net.ParseCIDR(proxy)
-		if err != nil {
-			log.Fatal("failed to parse trusted proxy CIDR", zap.Error(err))
-		}
-
-		trustedProxies = append(trustedProxies, ipnet)
-	}
-
-	for _, rcfg := range routingConfig.Flows {
-		flow, err := compileFlow(rcfg, trustedProxies, log)
-		if err != nil {
-			log.Fatal("failed to initialize flow", zap.Error(err))
+			log.Fatal("failed to compile flow", zap.Error(err))
 		}
 
 		router.Flows = append(router.Flows, flow)
 	}
 
-	return router
+	router.registerFlows()
+
+	return router, reg
 }
 
-func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
-	metrics := metric.NewNop()
+func (r *Router) registerFlows() {
+	r.chiRouter.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedFlow)
+		r.log.Error("no flow matched", zap.String("request_uri", req.URL.RequestURI()))
 
+		http.NotFound(w, req)
+	})
+
+	for i := range r.Flows {
+		flow := &r.Flows[i]
+
+		middlewares := make([]func(http.Handler) http.Handler, 0, len(flow.Middlewares))
+		for _, m := range flow.Middlewares {
+			middlewares = append(middlewares, m.Handler)
+		}
+
+		r.chiRouter.With(middlewares...).Method(
+			flow.Method,
+			flow.Path,
+			r.newFlowHandler(flow),
+		)
+	}
+}
+
+func initMinimalRouter(routesCount int, metrics metric.Metrics, log *zap.Logger) *Router {
 	return &Router{
+		chiRouter: chi.NewMux(),
 		dispatcher: &defaultDispatcher{
 			log:     log.Named("dispatcher"),
 			metrics: metrics,
 		},
-		aggregator: &defaultAggregator{
-			log: log.Named("aggregator"),
-		},
+		aggregator:  &defaultAggregator{},
 		Flows:       make([]Flow, 0, routesCount),
 		log:         log,
 		metrics:     metrics,
@@ -100,8 +85,63 @@ func initMinimalRouter(routesCount int, log *zap.Logger) *Router {
 	}
 }
 
-func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, log *zap.Logger) (Flow, error) {
-	upstreams := initUpstreams(cfg.Upstreams, trustedProxies)
+func initMetrics(cfg MetricsConfig) (metric.Metrics, *prometheus.Registry) {
+	if !cfg.Enabled {
+		return metric.NewNop(), nil
+	}
+
+	switch cfg.Provider {
+	case "prometheus":
+		return metric.NewPrometheus()
+	default:
+		return metric.NewNop(), nil
+	}
+}
+
+func initRateLimiter(cfg RateLimiterConfig, log *zap.Logger) *ratelimit.RateLimit {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	rl := ratelimit.New(cfg.Config)
+	if err := rl.Start(); err != nil {
+		log.Fatal("failed to start rate limiter", zap.Error(err))
+	}
+
+	return rl
+}
+
+func initLumos(cfg LumosConfig) *lumos {
+	lumosCfg := lumosConfig{
+		socketPath:          cfg.SocketPath,
+		socketReadDeadline:  cfg.ReadDeadline,
+		socketWriteDeadline: cfg.WriteDeadline,
+		msgMaxSize:          cfg.MsgMaxSize,
+	}
+
+	return &lumos{cfg: lumosCfg}
+}
+
+func parseTrustedProxies(proxies []string, log *zap.Logger) []*net.IPNet {
+	result := make([]*net.IPNet, 0, len(proxies))
+
+	for _, proxy := range proxies {
+		_, ipnet, err := net.ParseCIDR(proxy)
+		if err != nil {
+			log.Fatal("failed to parse trusted proxy CIDR",
+				zap.String("cidr", proxy),
+				zap.Error(err),
+			)
+		}
+
+		result = append(result, ipnet)
+	}
+
+	return result
+}
+
+func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics metric.Metrics, log *zap.Logger) (Flow, error) {
+	upstreams := initUpstreams(cfg.Upstreams, trustedProxies, metrics, log)
 
 	aggregation, err := initAggregation(cfg.Aggregation, upstreams)
 	if err != nil {
@@ -116,184 +156,9 @@ func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, log *zap.Logger) (
 		Upstreams:            upstreams,
 		Plugins:              initPlugins(cfg.Plugins, log),
 		Middlewares:          initMiddlewares(cfg.Middlewares, log),
+
+		sem: semaphore.NewWeighted(cfg.MaxParallelUpstreams),
 	}, nil
-}
-
-func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
-	middlewares := make([]Middleware, 0, len(cfgs))
-
-	for _, cfg := range cfgs {
-		cfn := func(middleware Middleware) bool {
-			return middleware.Name() == cfg.Name
-		}
-
-		if slices.ContainsFunc(middlewares, cfn) {
-			continue
-		}
-
-		var soPath string
-
-		switch cfg.Source {
-		case sourceBuiltin:
-			soPath = builtinMiddlewaresPath + cfg.Name + extSo
-		case sourceFile:
-			pathCopy := cfg.Path
-			if !strings.HasSuffix(cfg.Path, "/") {
-				pathCopy = cfg.Path + "/"
-			}
-
-			soPath = pathCopy + cfg.Name + extSo
-		default:
-			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
-		}
-
-		soMiddleware := loadMiddleware(soPath, cfg.Config, log)
-		if soMiddleware == nil {
-			log.Error("cannot load middleware",
-				zap.String("name", cfg.Name),
-				zap.String("path", soPath),
-			)
-
-			panic(fmt.Sprintf("cannot load middleware from path '%s'", soPath))
-		}
-
-		log.Info("middleware initialized", zap.String("name", soMiddleware.Name()))
-
-		middlewares = append(middlewares, soMiddleware)
-	}
-
-	return middlewares
-}
-
-func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
-	plugins := make([]Plugin, 0, len(cfgs))
-
-	for _, cfg := range cfgs {
-		cfn := func(plugin Plugin) bool {
-			return plugin.Info().Name == cfg.Name
-		}
-
-		if slices.ContainsFunc(plugins, cfn) {
-			continue
-		}
-
-		var soPath string
-
-		switch cfg.Source {
-		case sourceBuiltin:
-			soPath = builtinPluginsPath + cfg.Name + extSo
-		case sourceFile:
-			pathCopy := cfg.Path
-			if !strings.HasSuffix(cfg.Path, "/") {
-				pathCopy = cfg.Path + "/"
-			}
-
-			soPath = pathCopy + cfg.Name + extSo
-		default:
-			panic(fmt.Sprintf("invalid source '%s'", cfg.Source))
-		}
-
-		soPlugin := loadPlugin(soPath, cfg.Config, log)
-		if soPlugin == nil {
-			log.Error(
-				"cannot load plugin",
-				zap.String("name", cfg.Name),
-				zap.String("path", soPath),
-			)
-
-			panic(fmt.Sprintf("cannot load plugin from path '%s'", soPath))
-		}
-
-		log.Info("plugin initialized", zap.Any("name", soPlugin.Info()))
-
-		plugins = append(plugins, soPlugin)
-	}
-
-	return plugins
-}
-
-func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet) []Upstream {
-	upstreams := make([]Upstream, 0, len(cfgs))
-
-	//nolint:mnd // be configurable in future
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		ForceAttemptHTTP2:   true,
-	}
-
-	// Build upstream policy
-	for _, cfg := range cfgs {
-		policy := Policy{
-			AllowedStatuses:     cfg.Policy.AllowedStatuses,
-			RequireBody:         cfg.Policy.RequireBody,
-			MaxResponseBodySize: cfg.Policy.MaxResponseBodySize,
-			RetryPolicy: RetryPolicy{
-				MaxRetries:      cfg.Policy.RetryConfig.MaxRetries,
-				RetryOnStatuses: cfg.Policy.RetryConfig.RetryOnStatuses,
-				BackoffDelay:    cfg.Policy.RetryConfig.BackoffDelay,
-			},
-			CircuitBreaker: CircuitBreakerPolicy{
-				Enabled:      cfg.Policy.CircuitBreakerConfig.Enabled,
-				MaxFailures:  cfg.Policy.CircuitBreakerConfig.MaxFailures,
-				ResetTimeout: cfg.Policy.CircuitBreakerConfig.ResetTimeout,
-			},
-			LoadBalancing: LoadBalancingPolicy{
-				Mode: cfg.Policy.LoadBalancingConfig.Mode,
-			},
-		}
-
-		var circuitBreaker *circuitbreaker.CircuitBreaker
-		if policy.CircuitBreaker.Enabled {
-			circuitBreaker = circuitbreaker.New(policy.CircuitBreaker.MaxFailures, policy.CircuitBreaker.ResetTimeout)
-		}
-
-		name := cfg.Name
-		if name == "" {
-			makeUpstreamName(cfg.Method, cfg.Hosts)
-		}
-
-		upstream := &httpUpstream{
-			id:                uuid.NewString(),
-			name:              name,
-			hosts:             cfg.Hosts,
-			path:              cfg.Path,
-			method:            cfg.Method,
-			timeout:           cfg.Timeout,
-			forwardHeaders:    cfg.ForwardHeaders,
-			forwardQueries:    cfg.ForwardQueries,
-			trustedProxies:    trustedProxies,
-			policy:            policy,
-			activeConnections: make([]int64, len(cfg.Hosts)),
-			client: &http.Client{
-				Transport: transport,
-			},
-			circuitBreaker: circuitBreaker,
-		}
-
-		upstreams = append(upstreams, upstream)
-	}
-
-	return upstreams
-}
-
-// makeUpstreamName returns the upstream name made up of its method and hosts separated by a hyphen.
-func makeUpstreamName(method string, hosts []string) string {
-	sb := strings.Builder{}
-
-	sb.WriteString(strings.ToLower(method))
-	sb.WriteString("-")
-
-	for i, host := range hosts {
-		sb.WriteString(strings.ToLower(host))
-
-		if i != len(hosts)-1 {
-			sb.WriteString("-")
-		}
-	}
-
-	return sb.String()
 }
 
 func initAggregation(cfg AggregationConfig, upstreams []Upstream) (Aggregation, error) {

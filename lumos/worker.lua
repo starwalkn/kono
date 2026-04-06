@@ -54,7 +54,7 @@ local SOCK_STREAM   = 1
 local SIGTERM       = 15
 local SIGINT        = 2
 
-local socket_path   = "/tmp/kono-lua.sock"
+local socket_path   = "/tmp/lumos.sock"
 local WORKERS       = 5
 
 -- Shared shutdown flag.
@@ -184,7 +184,7 @@ local function worker_loop()
                 if ok then
                     log.info("request:" .. request.request_id)
 
-                    request.headers["X-Kono-Modified"] = 1
+                    request.headers["X-Lumos-Modified"] = 1
 
                     local response = process_request(request)
                     local resp_json = cjson.encode(response)

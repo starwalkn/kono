@@ -5,20 +5,20 @@ import "time"
 type FailReason string
 
 const (
-	FailReasonGatewayError    FailReason = "gateway_error"
-	FailReasonUpstreamError   FailReason = "upstream_error"
 	FailReasonNoMatchedFlow   FailReason = "no_matched_flow"
-	FailReasonPolicyViolation FailReason = "policy_violation"
 	FailReasonBodyTooLarge    FailReason = "body_too_large"
-	FailReasonUnknown         FailReason = "unknown"
+	FailReasonTooManyRequests FailReason = "too_many_requests"
 )
 
 type Metrics interface {
-	IncRequestsTotal()
+	IncRequestsTotal(route, method string, status int)
 	UpdateRequestsDuration(route, method string, start time.Time)
-	IncResponsesTotal(route string, status int)
 	IncRequestsInFlight()
 	DecRequestsInFlight()
-	IncFailedRequestsTotal(FailReason)
-	UpdateUpstreamLatency(route, method, upstream string, lat time.Duration)
+	IncFailedRequestsTotal(reason FailReason)
+	UpdateUpstreamLatency(route, upstream string, start time.Time)
+	IncUpstreamRequestsTotal(route, upstream string)
+	IncUpstreamErrorsTotal(route, upstream, kind string)
+	IncUpstreamRetriesTotal(route, upstream string)
+	SetCircuitBreakerState(upstream string, state float64)
 }

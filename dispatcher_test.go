@@ -3,512 +3,608 @@ package kono
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
+
 	"github.com/starwalkn/kono/internal/circuitbreaker"
 	"github.com/starwalkn/kono/internal/metric"
-
-	"go.uber.org/zap"
 )
 
-const maxParallelUpstreams = 10
+const defaultMaxParallel = 10
 
-func TestDispatcher_Dispatch_Success(t *testing.T) {
-	t.Log(runtime.NumCPU())
+func newTestUpstream(host string, opts ...func(*httpUpstream)) *httpUpstream {
+	u := &httpUpstream{
+		cfg: upstreamConfig{
+			hosts:   []string{host},
+			method:  http.MethodGet,
+			timeout: 500 * time.Millisecond,
+		},
+		state:   upstreamState{},
+		metrics: metric.NewNop(),
+		log:     zap.NewNop(),
+		client:  http.DefaultClient,
+	}
 
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	for _, opt := range opts {
+		opt(u)
+	}
+
+	return u
+}
+
+func withMethod(method string) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.method = method }
+}
+
+func withTimeout(d time.Duration) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.timeout = d }
+}
+
+func withPolicy(p Policy) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.policy = p }
+}
+
+func withForwardQueries(queries ...string) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.forwardQueries = queries }
+}
+
+func withForwardHeaders(headers ...string) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.forwardHeaders = headers }
+}
+
+func withForwardParams(params ...string) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.forwardParams = params }
+}
+
+func withPath(path string) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.path = path }
+}
+
+func withHosts(hosts ...string) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.cfg.hosts = hosts }
+}
+
+func withLBMode(mode LBMode, hostCount int) func(*httpUpstream) {
+	return func(u *httpUpstream) {
+		u.cfg.lbMode = mode
+		u.state.activeConnections = make([]int64, hostCount)
+	}
+}
+
+func withCircuitBreaker(cb *circuitbreaker.CircuitBreaker) func(*httpUpstream) {
+	return func(u *httpUpstream) { u.circuitBreaker = cb }
+}
+
+func newTestFlow(upstreams []Upstream, maxParallel int64) *Flow {
+	return &Flow{
+		Upstreams: upstreams,
+		sem:       semaphore.NewWeighted(maxParallel),
+	}
+}
+
+func newTestDispatcher() *defaultDispatcher {
+	return &defaultDispatcher{
+		log:     zap.NewNop(),
+		metrics: metric.NewNop(),
+	}
+}
+
+func TestDispatcher_TwoUpstreams_BothSucceed(t *testing.T) {
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		w.Write([]byte("A"))
 	}))
-	defer upstreamA.Close()
+	defer serverA.Close()
 
-	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		w.Write([]byte("B"))
 	}))
-	defer upstreamB.Close()
+	defer serverB.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(serverA.URL),
+		newTestUpstream(serverB.URL),
+	}, defaultMaxParallel)
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{hosts: []string{upstreamA.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
-			&httpUpstream{hosts: []string{upstreamB.URL}, timeout: 1000 * time.Millisecond, log: zap.NewNop(), client: http.DefaultClient},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-
-	results := d.dispatch(route, originalRequest)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-
-	got := string(results[0].Body) + string(results[1].Body)
-	want1 := "AB"
-	if got != want1 {
-		t.Errorf("unexpected results: %q", got)
+	if results[0].Err != nil {
+		t.Errorf("upstream A: unexpected error: %v", results[0].Err)
+	}
+	if results[1].Err != nil {
+		t.Errorf("upstream B: unexpected error: %v", results[1].Err)
+	}
+	if string(results[0].Body) != "A" {
+		t.Errorf("upstream A: expected body 'A', got %q", results[0].Body)
+	}
+	if string(results[1].Body) != "B" {
+		t.Errorf("upstream B: expected body 'B', got %q", results[1].Body)
 	}
 }
 
-func TestDispatcher_Dispatch_ForwardQueryAndHeaders(t *testing.T) {
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query().Get("foo")
-		h := r.Header.Get("X-Test")
-
-		w.Write([]byte(q + "-" + h))
-	}))
-	defer upstreamA.Close()
-
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
-
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:          []string{upstreamA.URL},
-				forwardQueries: []string{"foo"},
-				forwardHeaders: []string{"X-Test"},
-				timeout:        500 * time.Millisecond,
-				log:            zap.NewNop(),
-				client:         http.DefaultClient,
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
-
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test?foo=bar", nil)
-	originalRequest.Header.Set("X-Test", "baz")
-
-	results := d.dispatch(route, originalRequest)
-
-	if string(results[0].Body) != "bar-baz" {
-		t.Errorf("unexpected result: %q", results[0].Body)
-	}
-}
-
-func TestDispatcher_Dispatch_PostWithBody(t *testing.T) {
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestDispatcher_PostRequest_BodyForwarded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.Write(body)
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withMethod(http.MethodPost)),
+	}, defaultMaxParallel)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("hello"))
+	results := newTestDispatcher().dispatch(flow, req)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodPost,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
+	if results[0].Err != nil {
+		t.Fatalf("unexpected error: %v", results[0].Err)
 	}
-
-	originalRequest := httptest.NewRequest(http.MethodPost, "http://example.com/test", bytes.NewBufferString("hello"))
-
-	results := d.dispatch(route, originalRequest)
-
 	if string(results[0].Body) != "hello" {
-		t.Errorf("expected 'hello', got %q", results[0].Body)
+		t.Errorf("expected body 'hello', got %q", results[0].Body)
 	}
 }
 
-func TestDispatcher_Dispatch_UpstreamTimeout(t *testing.T) {
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		time.Sleep(600 * time.Millisecond)
+func TestDispatcher_BodyExceedsMaxSize_ReturnsNil(t *testing.T) {
+	flow := newTestFlow([]Upstream{
+		newTestUpstream("http://localhost"),
+	}, defaultMaxParallel)
+
+	oversizedBody := bytes.Repeat([]byte("x"), maxBodySize+1)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
+
+	if results := newTestDispatcher().dispatch(flow, req); results != nil {
+		t.Errorf("expected nil results for oversized body, got %d results", len(results))
+	}
+}
+
+func TestDispatcher_ForwardQueryAndHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("foo")
+		h := r.Header.Get("X-Test")
+		w.Write([]byte(q + "-" + h))
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL,
+			withForwardQueries("foo"),
+			withForwardHeaders("X-Test"),
+		),
+	}, defaultMaxParallel)
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
-
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-
-	results := d.dispatch(route, originalRequest)
+	req := httptest.NewRequest(http.MethodGet, "/?foo=bar", nil)
+	req.Header.Set("X-Test", "baz")
+	results := newTestDispatcher().dispatch(flow, req)
 
 	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-
-	if !errors.Is(results[0].Err, context.DeadlineExceeded) {
-		t.Errorf("expected timeout error, got %v", results[0].Err)
+	if string(results[0].Body) != "bar-baz" {
+		t.Errorf("expected 'bar-baz', got %q", results[0].Body)
 	}
 }
 
-func TestDispatcher_Dispatch_MaxResponseBodySizePolicy(t *testing.T) {
-	var (
-		responseText        string = "abcdefghijklmnopqrstuvwxyz"
-		maxResponseBodySize int64  = 10
-	)
-
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(responseText))
+func TestDispatcher_ForwardParams_AddedToQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(r.URL.Query().Get("user_id")))
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withForwardParams("user_id")),
+	}, defaultMaxParallel)
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					MaxResponseBodySize: maxResponseBodySize,
-				},
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("user_id", "42")
+	req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-
-	results := d.dispatch(route, originalRequest)
+	results := newTestDispatcher().dispatch(flow, req)
 
 	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-
-	if results[0].Err == nil {
-		t.Errorf("expected error, got nil")
-	}
-
-	if results[0].Err.Error() != string(UpstreamBodyTooLarge) {
-		t.Errorf("expected error message 'response body larger than limit of %d bytes', got %v", maxResponseBodySize, results[0].Err)
+	if string(results[0].Body) != "42" {
+		t.Errorf("expected user_id '42' in query, got %q", results[0].Body)
 	}
 }
 
-func TestDispatcher_Dispatch_RequireBodyPolicy(t *testing.T) {
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestDispatcher_ExpandPathParams_InUpstreamPath(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`Never gonna give you up
-			Never gonna let you down
-			Never gonna run around and desert you`))
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withPath("/orders/{order_id}")),
+	}, defaultMaxParallel)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("order_id", "99")
+	req := httptest.NewRequest(http.MethodGet, "/orders/99", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	newTestDispatcher().dispatch(flow, req)
+
+	if receivedPath != "/orders/99" {
+		t.Errorf("expected upstream path '/orders/99', got %q", receivedPath)
+	}
+}
+
+func TestDispatcher_Policy_RequireBody_ViolatedOnEmptyResponse(t *testing.T) {
+	serverWithBody := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer serverWithBody.Close()
+
+	serverNoBody := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer upstreamB.Close()
+	defer serverNoBody.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(serverWithBody.URL, withPolicy(Policy{RequireBody: true})),
+		newTestUpstream(serverNoBody.URL, withPolicy(Policy{RequireBody: true})),
+	}, defaultMaxParallel)
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					RequireBody: true,
-				},
-			},
-			&httpUpstream{
-				hosts:   []string{upstreamB.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					RequireBody: true,
-				},
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
-
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-
-	results := d.dispatch(route, originalRequest)
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if len(results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(results))
+		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-
 	if results[0].Err != nil {
-		t.Errorf("expected no error, got %v", results[0].Err)
+		t.Errorf("upstream with body: unexpected error: %v", results[0].Err)
 	}
-
-	if results[1].Err == nil || results[1].Err.Unwrap().Error() != "empty body not allowed by upstream policy" {
-		t.Errorf("expected policy violation error, got %v", results[1].Err)
+	if results[1].Err == nil {
+		t.Fatal("upstream without body: expected policy violation error, got nil")
+	}
+	if results[1].Err.Unwrap() == nil || results[1].Err.Unwrap().Error() != "empty body not allowed by upstream policy" {
+		t.Errorf("unexpected error message: %v", results[1].Err.Unwrap())
 	}
 }
 
-func TestDispatcher_Dispatch_RetryPolicy(t *testing.T) {
-	attemptsCount := 0
+func TestDispatcher_Policy_AllowedStatuses_ViolatedOnUnexpectedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer server.Close()
 
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		attemptsCount++
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withPolicy(Policy{AllowedStatuses: []int{http.StatusOK}})),
+	}, defaultMaxParallel)
 
-		if attemptsCount <= 2 {
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Fatal("expected policy violation error, got nil")
+	}
+}
+
+func TestDispatcher_Policy_MaxResponseBodySize_Exceeded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("abcdefghijklmnopqrstuvwxyz"))
+	}))
+	defer server.Close()
+
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withPolicy(Policy{MaxResponseBodySize: 10})),
+	}, defaultMaxParallel)
+
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Fatal("expected body too large error, got nil")
+	}
+	if results[0].Err.Kind != UpstreamBodyTooLarge {
+		t.Errorf("expected kind %q, got %q", UpstreamBodyTooLarge, results[0].Err.Kind)
+	}
+}
+
+func TestDispatcher_UpstreamTimeout_ReturnsTimeoutKind(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withTimeout(100*time.Millisecond)),
+	}, defaultMaxParallel)
+
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if results[0].Err.Kind != UpstreamTimeout {
+		t.Errorf("expected kind %q, got %q", UpstreamTimeout, results[0].Err.Kind)
+	}
+}
+
+func TestDispatcher_Retry_SucceedsAfterTwoFailures(t *testing.T) {
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) <= 2 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
-
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					RetryPolicy: RetryPolicy{
-						MaxRetries:      3,
-						RetryOnStatuses: []int{http.StatusInternalServerError},
-						BackoffDelay:    10 * time.Millisecond,
-					},
-				},
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withPolicy(Policy{
+			Retry: RetryPolicy{
+				MaxRetries:      3,
+				RetryOnStatuses: []int{http.StatusInternalServerError},
+				BackoffDelay:    10 * time.Millisecond,
 			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
+		})),
+	}, defaultMaxParallel)
 
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-
-	results := d.dispatch(route, originalRequest)
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-
-	retriesCount := attemptsCount - 1
-
-	if retriesCount > route.Upstreams[0].Policy().RetryPolicy.MaxRetries {
-		t.Errorf("retries count %d exceeds max retries %d", retriesCount, route.Upstreams[0].Policy().RetryPolicy.MaxRetries)
+	if results[0].Err != nil {
+		t.Errorf("expected no error after retry, got %v", results[0].Err)
+	}
+	if attempts.Load() != 3 {
+		t.Errorf("expected exactly 3 attempts (2 failures + 1 success), got %d", attempts.Load())
 	}
 }
 
-func TestDispatcher_Dispatch_CircuitBreakerPolicy(t *testing.T) {
-	var (
-		failures    = 0
-		maxFailures = 3
-	)
+func TestDispatcher_Retry_ExhaustsMaxRetries(t *testing.T) {
+	var attempts atomic.Int32
 
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		failures++
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
+	maxRetries := 3
+
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withPolicy(Policy{
+			Retry: RetryPolicy{
+				MaxRetries:      maxRetries,
+				RetryOnStatuses: []int{http.StatusInternalServerError},
+				BackoffDelay:    10 * time.Millisecond,
+			},
+		})),
+	}, defaultMaxParallel)
+
+	results := newTestDispatcher().dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
+	if results[0].Err == nil {
+		t.Fatal("expected error after exhausting retries, got nil")
+	}
+	if results[0].Err.Kind != UpstreamBadStatus {
+		t.Errorf("expected kind %q, got %q", UpstreamBadStatus, results[0].Err.Kind)
+	}
+	if attempts.Load() != int32(maxRetries+1) {
+		t.Errorf("expected %d attempts, got %d", maxRetries+1, attempts.Load())
+	}
+}
 
+func TestDispatcher_CircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
+	var upstreamCalls atomic.Int32
+
+	maxFailures := 3
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	// Circuit breaker is built separately — same as buildCircuitBreaker does at init time
 	cb := circuitbreaker.New(maxFailures, 100*time.Millisecond)
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					// The policy is added for clarity, but we are creating the
-					// circuit breaker separately since the upstream builder is not involved here.
-					CircuitBreaker: CircuitBreakerPolicy{
-						Enabled:      true,
-						MaxFailures:  maxFailures,
-						ResetTimeout: 100 * time.Millisecond,
-					},
-				},
-				circuitBreaker: cb,
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withCircuitBreaker(cb)),
+	}, defaultMaxParallel)
 
-	originalRequest := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+	d := newTestDispatcher()
 
-	var results []UpstreamResponse
-
-	for range 5 {
-		responses := d.dispatch(route, originalRequest)
-		results = append(results, responses[0])
+	results := make([]UpstreamResponse, 5)
+	for i := range results {
+		responses := d.dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+		results[i] = responses[0]
 	}
 
 	for i := range maxFailures {
 		if results[i].Err == nil || results[i].Err.Kind != UpstreamBadStatus {
-			t.Errorf("expected %s error for attempt %d, got %v", UpstreamBadStatus, i, results[i].Err)
+			t.Errorf("request %d: expected %q, got %v", i, UpstreamBadStatus, results[i].Err)
 		}
 	}
 
-	for i := 3; i < 5; i++ {
+	for i := maxFailures; i < 5; i++ {
 		if results[i].Err == nil || results[i].Err.Kind != UpstreamCircuitOpen {
-			t.Errorf("expected %s error for attempt %d, got %v", UpstreamCircuitOpen, i, results[i].Err)
+			t.Errorf("request %d: expected %q, got %v", i, UpstreamCircuitOpen, results[i].Err)
 		}
 	}
 
-	if failures != maxFailures {
-		t.Errorf("expected %d upstream calls, got %d", maxFailures, failures)
+	if upstreamCalls.Load() != int32(maxFailures) {
+		t.Errorf("expected %d upstream calls, got %d", maxFailures, upstreamCalls.Load())
 	}
 }
 
-func TestDispatcher_Dispatch_LoadBalancerPolicy_RoundRobin(t *testing.T) {
-	var callsA, callsB int
+func TestDispatcher_CircuitBreaker_ClosesAfterReset(t *testing.T) {
+	resetTimeout := 100 * time.Millisecond
+	cb := circuitbreaker.New(1, resetTimeout)
 
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callsA++
-		w.Write([]byte("A"))
+	var calls atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
-	defer upstreamA.Close()
+	defer server.Close()
 
-	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callsB++
-		w.Write([]byte("B"))
-	}))
-	defer upstreamB.Close()
+	flow := newTestFlow([]Upstream{
+		newTestUpstream(server.URL, withCircuitBreaker(cb)),
+	}, defaultMaxParallel)
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
+	d := newTestDispatcher()
+
+	r1 := d.dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+	if r1[0].Err == nil || r1[0].Err.Kind != UpstreamBadStatus {
+		t.Fatalf("first request: expected %q, got %v", UpstreamBadStatus, r1[0].Err)
 	}
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL, upstreamB.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					LoadBalancing: LoadBalancingPolicy{Mode: lbModeRoundRobin},
-				},
-			},
-		},
-		MaxParallelUpstreams: 1,
+	r2 := d.dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+	if r2[0].Err == nil || r2[0].Err.Kind != UpstreamCircuitOpen {
+		t.Fatalf("second request: expected %q (breaker open), got %v", UpstreamCircuitOpen, r2[0].Err)
 	}
 
+	time.Sleep(resetTimeout + 20*time.Millisecond)
+
+	r3 := d.dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
+	if r3[0].Err != nil {
+		t.Errorf("third request after reset: expected no error, got %v", r3[0].Err)
+	}
+}
+
+func TestDispatcher_LoadBalancer_RoundRobin_EvenDistribution(t *testing.T) {
+	var callsA, callsB atomic.Int32
+
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsA.Add(1)
+	}))
+	defer serverA.Close()
+
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsB.Add(1)
+	}))
+	defer serverB.Close()
+
+	flow := newTestFlow([]Upstream{
+		newTestUpstream("",
+			withHosts(serverA.URL, serverB.URL),
+			withLBMode(lbModeRoundRobin, 2),
+		),
+	}, 1)
+
+	d := newTestDispatcher()
 	for range 4 {
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-		_ = d.dispatch(route, req)
+		d.dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 	}
 
-	if callsA != 2 || callsB != 2 {
-		t.Errorf("expected round robin distribution 2/2, got A=%d B=%d", callsA, callsB)
+	if callsA.Load() != 2 || callsB.Load() != 2 {
+		t.Errorf("expected round-robin 2/2, got A=%d B=%d", callsA.Load(), callsB.Load())
 	}
 }
 
-func TestDispatcher_Dispatch_LoadBalancerPolicy_LeastConns(t *testing.T) {
-	var callsA, callsB int
+func TestDispatcher_LoadBalancer_LeastConns_PrefersFastServer(t *testing.T) {
+	var callsA, callsB atomic.Int32
 
-	// Slow server
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callsA++
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsA.Add(1)
 		time.Sleep(100 * time.Millisecond)
-		w.Write([]byte("A"))
 	}))
-	defer upstreamA.Close()
+	defer serverA.Close()
 
-	// Fast server
-	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callsB++
-		w.Write([]byte("B"))
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callsB.Add(1)
 	}))
-	defer upstreamB.Close()
+	defer serverB.Close()
 
-	d := &defaultDispatcher{
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	flow := newTestFlow([]Upstream{
+		newTestUpstream("",
+			withHosts(serverA.URL, serverB.URL),
+			withLBMode(lbModeLeastConns, 2),
+		),
+	}, defaultMaxParallel)
 
-	route := &Flow{
-		Upstreams: []Upstream{
-			&httpUpstream{
-				hosts:   []string{upstreamA.URL, upstreamB.URL},
-				method:  http.MethodGet,
-				timeout: 500 * time.Millisecond,
-				log:     zap.NewNop(),
-				client:  http.DefaultClient,
-				policy: Policy{
-					LoadBalancing: LoadBalancingPolicy{Mode: lbModeLeastConns},
-				},
-				activeConnections: make([]int64, 2),
-			},
-		},
-		MaxParallelUpstreams: maxParallelUpstreams,
-	}
+	d := newTestDispatcher()
 
 	var wg sync.WaitGroup
-
 	for range 10 {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
-
-			req := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
-			_ = d.dispatch(route, req)
+			d.dispatch(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 		}()
-
 		time.Sleep(20 * time.Millisecond)
 	}
 	wg.Wait()
 
-	if callsB <= callsA {
-		t.Errorf("expected fast upstream (B) to receive more traffic, got A=%d B=%d", callsA, callsB)
+	if callsB.Load() <= callsA.Load() {
+		t.Errorf("fast upstream B should receive more requests: A=%d B=%d", callsA.Load(), callsB.Load())
+	}
+}
+
+func TestDispatcher_Semaphore_LimitsParallelism(t *testing.T) {
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		cur := concurrent.Add(1)
+		defer concurrent.Add(-1)
+
+		for {
+			old := maxConcurrent.Load()
+			if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+
+		time.Sleep(30 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	const maxParallel = 2
+	const upstreamCount = 6
+
+	upstreams := make([]Upstream, upstreamCount)
+	for i := range upstreamCount {
+		upstreams[i] = newTestUpstream(server.URL)
+	}
+
+	newTestDispatcher().dispatch(
+		newTestFlow(upstreams, maxParallel),
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	)
+
+	if maxConcurrent.Load() > maxParallel {
+		t.Errorf("parallelism exceeded limit: max allowed %d, observed %d", maxParallel, maxConcurrent.Load())
 	}
 }

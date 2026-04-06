@@ -95,7 +95,6 @@ linters:
     - loggercheck # checks key value pairs for common logger libraries (kitlog,klog,logr,zap)
     - makezero # finds slice declarations with non-zero initial length
     - mirror # reports wrong mirror patterns of bytes/strings usage
-    - mnd # detects magic numbers
     - musttag # enforces field tags in (un)marshaled structs
     - nakedret # finds naked returns in functions greater than a specified function length
     - nilerr # finds the code that returns nil even if it checks that the error is not nil
@@ -128,6 +127,7 @@ linters:
     - whitespace # detects leading and trailing whitespace
 
     ## you may want to enable
+    #- mnd # detects magic numbers
     #- goconst # finds repeated strings that could be replaced by a constant
     #- nestif # reports deeply nested if statements
     #- forbidigo # forbids identifiers

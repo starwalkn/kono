@@ -1,5 +1,7 @@
 package kono
 
+import "golang.org/x/sync/semaphore"
+
 type Flow struct {
 	Path                 string
 	Method               string
@@ -9,6 +11,8 @@ type Flow struct {
 	Scripts              []Script
 	Plugins              []Plugin
 	Middlewares          []Middleware
+
+	sem *semaphore.Weighted
 }
 
 type Aggregation struct {

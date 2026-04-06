@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/VictoriaMetrics/metrics"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono"
@@ -22,19 +22,18 @@ func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
 		Metrics: cfg.Server.Metrics,
 	}
 
-	mainRouter := kono.NewRouter(routingConfigSet, log.Named("router"))
+	mainRouter, promReg := kono.NewRouter(routingConfigSet, log.Named("router"))
 
 	mux := http.NewServeMux()
 
-	mux.Handle("/__health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /__health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK")) //nolint:errcheck,gosec // not important
 	}))
 
-	if cfg.Server.Metrics.Enabled {
-		mux.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			metrics.WritePrometheus(w, true)
-			// promhttp.Handler()
+	if cfg.Server.Metrics.Enabled && promReg != nil {
+		mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
 		}))
 	}
 

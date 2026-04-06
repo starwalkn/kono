@@ -1,12 +1,12 @@
 #!/bin/sh
 set -e
 
-# Start LuaWorker in background
-luajit /usr/local/lib/kono/luaworker/main.lua &
+# Start Lumos in background
+luajit /usr/local/lib/kono/lumos/worker.lua &
 
 LUA_PID=$!
 
-# Forward signals to LuaWorker
+# Forward signals to Lumos
 term_handler() {
   echo "Shutting down..."
   kill -TERM "$LUA_PID" 2>/dev/null

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -21,7 +22,16 @@ const (
 type Config struct {
 	Schema  string        `yaml:"schema" validate:"required,oneof=v1"`
 	Debug   bool          `yaml:"debug"`
+	Lumos   LumosConfig   `yaml:"lumos"`
 	Gateway GatewayConfig `yaml:"gateway" validate:"required"`
+}
+
+type LumosConfig struct {
+	Enabled       bool          `yaml:"enabled"`
+	SocketPath    string        `yaml:"socket_path"`
+	ReadDeadline  time.Duration `yaml:"read_deadline"`
+	WriteDeadline time.Duration `yaml:"write_deadline"`
+	MsgMaxSize    int           `yaml:"msg_max_size"`
 }
 
 type GatewayConfig struct {
@@ -32,7 +42,13 @@ type GatewayConfig struct {
 type ServerConfig struct {
 	Port    int           `yaml:"port" validate:"required,min=1,max=65535"`
 	Timeout time.Duration `yaml:"timeout"`
+	Pprof   PprofConfig   `yaml:"pprof"`
 	Metrics MetricsConfig `yaml:"metrics"`
+}
+
+type PprofConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Port    int  `yaml:"port" validate:"min=1,max=65535"`
 }
 
 type MetricsConfig struct {
@@ -61,8 +77,8 @@ type RateLimiterConfig struct {
 }
 
 type FlowConfig struct {
-	Path                 string             `yaml:"path" validate:"required"`
-	Method               string             `yaml:"method" validate:"required"`
+	Path                 string             `yaml:"path" validate:"required,startswith=/"`
+	Method               string             `yaml:"method" validate:"required,oneof=GET POST PUT PATCH DELETE HEAD OPTIONS"`
 	Aggregation          AggregationConfig  `yaml:"aggregation" validate:"required"`
 	MaxParallelUpstreams int64              `yaml:"max_parallel_upstreams"`
 	Upstreams            []UpstreamConfig   `yaml:"upstreams" validate:"required,min=1,dive,required"`
@@ -71,9 +87,9 @@ type FlowConfig struct {
 }
 
 type AggregationConfig struct {
-	BestEffort bool             `yaml:"best_effort"`
-	Strategy   string           `yaml:"strategy" validate:"required,oneof=array merge"`
-	OnConflict OnConflictConfig `yaml:"on_conflict" validate:"required_if=Strategy merge"`
+	BestEffort bool              `yaml:"best_effort"`
+	Strategy   string            `yaml:"strategy" validate:"required,oneof=array merge namespace"`
+	OnConflict *OnConflictConfig `yaml:"on_conflict" validate:"required_if=Strategy merge"`
 }
 
 type OnConflictConfig struct {
@@ -82,14 +98,22 @@ type OnConflictConfig struct {
 }
 
 type UpstreamConfig struct {
-	Name           string        `yaml:"name"`
-	Hosts          AddrList      `yaml:"hosts" validate:"min=1,dive"`
-	Path           string        `yaml:"path"`
-	Method         string        `yaml:"method" validate:"required"`
-	Timeout        time.Duration `yaml:"timeout"`
-	ForwardHeaders []string      `yaml:"forward_headers"`
-	ForwardQueries []string      `yaml:"forward_queries"`
-	Policy         PolicyConfig  `yaml:"policy"`
+	Name           string          `yaml:"name" validate:"required"`
+	Hosts          AddrList        `yaml:"hosts" validate:"min=1,dive"`
+	Path           string          `yaml:"path"`
+	Method         string          `yaml:"method"`
+	Timeout        time.Duration   `yaml:"timeout"`
+	ForwardHeaders []string        `yaml:"forward_headers"`
+	ForwardQueries []string        `yaml:"forward_queries"`
+	ForwardParams  []string        `yaml:"forward_params"`
+	Policy         PolicyConfig    `yaml:"policy"`
+	Transport      TransportConfig `yaml:"transport"`
+}
+
+type TransportConfig struct {
+	MaxIdleConns        int           `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"`
+	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`
 }
 
 type PluginConfig struct {
@@ -107,9 +131,10 @@ type MiddlewareConfig struct {
 }
 
 type PolicyConfig struct {
-	AllowedStatuses     []int `yaml:"allowed_status_codes"`
-	RequireBody         bool  `yaml:"allow_empty_body"`
-	MaxResponseBodySize int64 `yaml:"max_response_body_size"`
+	HeaderBlacklist     []string `yaml:"header_blacklist"`
+	AllowedStatuses     []int    `yaml:"allowed_status_codes"`
+	RequireBody         bool     `yaml:"allow_empty_body"`
+	MaxResponseBodySize int64    `yaml:"max_response_body_size"`
 
 	RetryConfig          RetryConfig          `yaml:"retry"`
 	CircuitBreakerConfig CircuitBreakerConfig `yaml:"circuit_breaker"`
@@ -174,6 +199,7 @@ func LoadConfig(path string) (Config, error) {
 	ensureGatewayDefaults(&cfg.Gateway)
 
 	v := validator.New()
+
 	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
 		name := fld.Tag.Get("yaml")
 		if name == "" || name == "-" {
@@ -187,7 +213,48 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid configuration: \n%w", formatValidationError(err))
 	}
 
+	if err = validatePathParams(cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid path params configuration: %w", err)
+	}
+
 	return cfg, nil
+}
+
+func validatePathParams(cfg Config) error {
+	paramRegexp := regexp.MustCompile(`\{([^}]+)\}`)
+
+	for _, flow := range cfg.Gateway.Routing.Flows {
+		flowParams := make(map[string]struct{})
+		for _, match := range paramRegexp.FindAllStringSubmatch(flow.Path, -1) {
+			flowParams[match[1]] = struct{}{}
+		}
+
+		for _, upstream := range flow.Upstreams {
+			for _, match := range paramRegexp.FindAllStringSubmatch(upstream.Path, -1) {
+				param := match[1]
+				if _, ok := flowParams[param]; !ok {
+					return fmt.Errorf(
+						"upstream '%s': path param '{%s}' not declared in flow path '%s'",
+						upstream.Name, param, flow.Path,
+					)
+				}
+			}
+
+			for _, param := range upstream.ForwardParams {
+				if param == "*" {
+					continue
+				}
+				if _, ok := flowParams[param]; !ok {
+					return fmt.Errorf(
+						"upstream '%s': forward_param '%s' not declared in flow path '%s'",
+						upstream.Name, param, flow.Path,
+					)
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // ensureGatewayDefaults ensures that default values are used in required configuration fields if they are not explicitly set.
@@ -204,6 +271,18 @@ func ensureGatewayDefaults(cfg *GatewayConfig) {
 		for j := range cfg.Routing.Flows[i].Upstreams {
 			if cfg.Routing.Flows[i].Upstreams[j].Timeout == 0 {
 				cfg.Routing.Flows[i].Upstreams[j].Timeout = defaultUpstreamTimeout
+			}
+
+			if cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConns == 0 {
+				cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConns = 100
+			}
+
+			if cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConnsPerHost == 0 {
+				cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConnsPerHost = 50
+			}
+
+			if cfg.Routing.Flows[i].Upstreams[j].Transport.IdleConnTimeout == 0 {
+				cfg.Routing.Flows[i].Upstreams[j].Transport.IdleConnTimeout = 90 * time.Second
 			}
 		}
 	}

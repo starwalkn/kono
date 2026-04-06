@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/starwalkn/kono/internal/metric"
 )
@@ -26,6 +25,12 @@ type defaultDispatcher struct {
 	metrics metric.Metrics
 }
 
+var wgPool = sync.Pool{
+	New: func() interface{} {
+		return &sync.WaitGroup{}
+	},
+}
+
 // dispatch sends the incoming HTTP request to all upstreams configured for the given route.
 // It reads and limits the request body, launches concurrent requests to upstreams using
 // a semaphore to control parallelism, applies upstream policies (like allowed statuses,
@@ -33,15 +38,17 @@ type defaultDispatcher struct {
 // the responses into a slice. Any policy violations or request errors are wrapped in
 // UpstreamError. The dispatcher waits for all upstream requests to complete before returning.
 func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []UpstreamResponse {
+	log := d.log.With(zap.String("request_id", requestIDFromContext(original.Context())))
+
 	results := make([]UpstreamResponse, len(flow.Upstreams))
 
 	originalBody, readErr := io.ReadAll(io.LimitReader(original.Body, maxBodySize+1))
 	if readErr != nil {
-		d.log.Error("cannot read body", zap.Error(readErr))
+		log.Error("cannot read body", zap.Error(readErr))
 		return nil
 	}
 	if readErr = original.Body.Close(); readErr != nil {
-		d.log.Warn("cannot close original request body", zap.Error(readErr))
+		log.Warn("cannot close original request body", zap.Error(readErr))
 	}
 
 	if len(originalBody) > maxBodySize {
@@ -49,14 +56,10 @@ func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []Upstr
 		return nil
 	}
 
-	var (
-		wg  = sync.WaitGroup{}
-		sem = semaphore.NewWeighted(flow.MaxParallelUpstreams)
-	)
+	wg := wgPool.Get().(*sync.WaitGroup)
+	wg.Add(len(flow.Upstreams))
 
 	for i, u := range flow.Upstreams {
-		wg.Add(1)
-
 		go func(i int, u Upstream, originalBody []byte) {
 			defer wg.Done()
 
@@ -64,8 +67,8 @@ func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []Upstr
 
 			ctx := original.Context()
 
-			if err := sem.Acquire(ctx, 1); err != nil {
-				d.log.Error("cannot acquire semaphore", zap.Error(err))
+			if err := flow.sem.Acquire(ctx, 1); err != nil {
+				log.Error("cannot acquire semaphore", zap.Error(err))
 
 				results[i] = UpstreamResponse{
 					Err: &UpstreamError{
@@ -76,12 +79,14 @@ func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []Upstr
 
 				return
 			}
-			defer sem.Release(1)
+			defer flow.sem.Release(1)
+
+			d.metrics.IncUpstreamRequestsTotal(flow.Path, u.Name())
 
 			resp := u.Call(ctx, original, originalBody)
 			if resp.Err != nil {
-				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
-				d.log.Error("upstream request failed",
+				d.metrics.IncUpstreamErrorsTotal(flow.Path, u.Name(), string(resp.Err.Kind))
+				log.Error("upstream request failed",
 					zap.String("name", u.Name()),
 					zap.Error(resp.Err.Unwrap()),
 				)
@@ -102,7 +107,7 @@ func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []Upstr
 			}
 
 			if len(errs) > 0 {
-				d.metrics.IncFailedRequestsTotal(metric.FailReasonPolicyViolation)
+				d.metrics.IncUpstreamErrorsTotal(flow.Path, u.Name(), "policy_violation")
 
 				if resp.Err == nil {
 					resp.Err = &UpstreamError{
@@ -113,13 +118,14 @@ func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []Upstr
 				}
 			}
 
-			d.metrics.UpdateUpstreamLatency(flow.Path, flow.Method, u.Name(), time.Since(start))
+			d.metrics.UpdateUpstreamLatency(flow.Path, u.Name(), start)
 
 			results[i] = *resp
 		}(i, u, originalBody)
 	}
 
 	wg.Wait()
+	wgPool.Put(wg)
 
 	return results
 }

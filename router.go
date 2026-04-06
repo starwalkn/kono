@@ -10,9 +10,11 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/oklog/ulid/v2"
 	"go.uber.org/zap"
 
@@ -20,7 +22,19 @@ import (
 	"github.com/starwalkn/kono/internal/ratelimit"
 )
 
+var hopByHopHeaders = map[string]struct{}{
+	"Content-Length":    {},
+	"Transfer-Encoding": {},
+	"Connection":        {},
+	"Trailer":           {},
+	"Date":              {},
+	"Server":            {},
+}
+
 type Router struct {
+	chiRouter *chi.Mux
+
+	lumos          *lumos
 	dispatcher     dispatcher
 	aggregator     aggregator
 	Flows          []Flow
@@ -57,222 +71,239 @@ type Router struct {
 // - 500 Internal Server Error: allowPartialResults=false, at least one upstream failed.
 //
 // The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
-//
-//nolint:gocognit,funlen // refactor in future
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.metrics.IncRequestsTotal()
-
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
 
-	matchedFlow := r.match(req)
-	if matchedFlow == nil {
-		r.log.Error("no flow matched", zap.String("request_uri", req.URL.RequestURI()))
-		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedFlow)
+	clientIP := extractClientIP(req)
+	req = req.WithContext(withClientIP(req.Context(), clientIP))
 
-		http.NotFound(w, req)
-
+	if !r.allowRequest(w, clientIP) {
 		return
 	}
 
-	if r.rateLimiter != nil {
-		if !r.rateLimiter.Allow(extractClientIP(req)) {
-			WriteError(w, ClientErrRateLimitExceeded, http.StatusTooManyRequests)
-			return
-		}
+	r.chiRouter.ServeHTTP(w, req)
+}
+
+func (r *Router) allowRequest(w http.ResponseWriter, clientIP string) bool {
+	if r.rateLimiter == nil {
+		return true
 	}
 
-	var flowHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		start := time.Now()
-		defer r.metrics.UpdateRequestsDuration(matchedFlow.Path, matchedFlow.Method, start)
+	if r.rateLimiter.Allow(clientIP) {
+		return true
+	}
 
-		// Kono internal context
-		tctx := newContext(req)
+	r.metrics.IncFailedRequestsTotal(metric.FailReasonTooManyRequests)
+	WriteError(w, ClientErrRateLimitExceeded, http.StatusTooManyRequests)
+
+	return false
+}
+
+func (r *Router) newFlowHandler(flow *Flow) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		start := time.Now()
+		defer r.metrics.UpdateRequestsDuration(flow.Path, flow.Method, start)
 
 		requestID := getOrCreateRequestID(req)
+		req = req.WithContext(withRequestID(req.Context(), requestID))
+		req = req.WithContext(withRoute(req.Context(), flow.Path))
 
-		// Request-phase plugins
-		for _, p := range matchedFlow.Plugins {
-			if p.Type() != PluginTypeRequest {
-				continue
-			}
+		log := r.log.With(zap.String("request_id", requestID))
 
-			r.log.Debug("executing request plugin", zap.String("name", p.Info().Name))
+		kctx := newContext(req)
 
-			if err := p.Execute(tctx); err != nil {
-				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-				return
-			}
+		if !r.runRequestPlugins(w, kctx, flow, log) {
+			return
 		}
 
-		for _, script := range matchedFlow.Scripts {
-			if script.Source == sourceFile {
-				luaResp, err := r.luaSendGet(req.Context(), req, requestID, script.Path)
-				if err != nil {
-					r.log.Error("failed to send-get request to lua worker", zap.String("request_id", requestID), zap.Error(err))
-					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-					return
-				}
-
-				switch luaResp.Action {
-				case luaActionContinue:
-					for k, v := range luaResp.Headers {
-						if len(v) == 0 {
-							continue
-						}
-
-						if len(v) > 1 {
-							for _, vv := range v {
-								w.Header().Add(k, vv)
-							}
-						} else {
-							req.Header.Set(k, v[0])
-						}
-					}
-
-					req.Method = luaResp.Method
-					req.URL.Path = luaResp.Path
-					req.URL.RawQuery = luaResp.Query
-					req.Header = luaResp.Headers
-
-					continue
-				case luaActionAbort:
-					r.log.Error("lua worker aborted request")
-					WriteError(w, ClientErrAborted, luaResp.HTTPStatus)
-
-					return
-				default:
-					r.log.Error("unknown action from lua worker response", zap.String("action", luaResp.Action))
-					WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-					return
-				}
-			}
+		req, ok := r.runLuaScripts(w, req, flow, log)
+		if !ok {
+			return
 		}
 
-		// Upstream dispatch
-		responses := r.dispatcher.dispatch(matchedFlow, req)
-		if responses == nil {
-			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
+		upstreamResponses := r.dispatcher.dispatch(flow, req)
+		if upstreamResponses == nil {
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
 			WriteError(w, ClientErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
 
 			return
 		}
 
-		headers := http.Header{
-			"X-Request-ID": []string{requestID},
-			// TODO: Think about several encoding options
-			"Content-Type": []string{"application/json; charset=utf-8"},
+		if r.log.Core().Enabled(zap.DebugLevel) {
+			r.log.Debug("dispatched responses", zap.Any("responses", upstreamResponses))
 		}
 
-		// Sets backends response headers
-		for _, resp := range responses {
-			// TODO: Consider a blacklist of returning headers
-			for k, v := range resp.Headers {
-				headers[k] = v
-			}
+		httpResp := r.buildResponse(req.Context(), upstreamResponses, flow, log) //nolint:bodyclose // closes in copyResponse
+
+		kctx.SetResponse(httpResp)
+
+		if !r.runResponsePlugins(w, kctx, flow, log) {
+			return
 		}
 
-		r.log.Debug("dispatched responses", zap.Any("responses", responses))
+		w.Header().Set("Content-Length", strconv.Itoa(int(kctx.Response().ContentLength))) //nolint:bodyclose // closes in copyResponse
 
-		// Aggregate upstream responses
-		aggregated := r.aggregator.aggregate(responses, matchedFlow.Aggregation)
-
-		r.log.Debug("aggregated responses",
-			zap.String("strategy", matchedFlow.Aggregation.Strategy.String()),
-			zap.Any("aggregated", aggregated),
-		)
-
-		var responseBody []byte
-
-		status := statusFromErrors(aggregated.Errors, aggregated.Partial)
-		switch {
-		case len(aggregated.Errors) > 0 && !aggregated.Partial:
-			responseBody = mustMarshal(ClientResponse{
-				Data:   nil,
-				Errors: aggregated.Errors,
-			})
-		case aggregated.Partial:
-			responseBody = mustMarshal(ClientResponse{
-				Data:   aggregated.Data,
-				Errors: aggregated.Errors,
-			})
-		default:
-			responseBody = mustMarshal(ClientResponse{
-				Data:   aggregated.Data,
-				Errors: nil,
-			})
-		}
-
-		resp := &http.Response{
-			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
-			StatusCode: status,
-			Body:       io.NopCloser(bytes.NewReader(responseBody)),
-			Header:     headers,
-		}
-
-		// Sets the response to the internal context for plugins
-		tctx.SetResponse(resp)
-
-		// Response-phase plugins
-		for _, p := range matchedFlow.Plugins {
-			if p.Type() != PluginTypeResponse {
-				continue
-			}
-
-			r.log.Debug("executing response plugin", zap.String("name", p.Info().Name))
-
-			if err := p.Execute(tctx); err != nil {
-				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-				return
-			}
-		}
-
-		r.metrics.IncResponsesTotal(matchedFlow.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
-
-		// Write final output.
-		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse
+		r.metrics.IncRequestsTotal(flow.Path, req.Method, kctx.Response().StatusCode) //nolint:bodyclose // closes in copyResponse
+		copyResponse(w, kctx.Response())                                              //nolint:bodyclose // closes in copyResponse
 	})
-
-	for i := len(matchedFlow.Middlewares) - 1; i >= 0; i-- {
-		flowHandler = matchedFlow.Middlewares[i].Handler(flowHandler)
-	}
-
-	flowHandler.ServeHTTP(w, req)
 }
 
-// match matches the given request to a flow.
-func (r *Router) match(req *http.Request) *Flow {
-	for i := range r.Flows {
-		flow := &r.Flows[i]
-
-		if flow.Method != "" && !strings.EqualFold(flow.Method, req.Method) {
+func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
+	for _, p := range flow.Plugins {
+		if p.Type() != PluginTypeRequest {
 			continue
 		}
 
-		if flow.Path != "" && req.URL.Path == flow.Path {
-			return flow
+		log.Debug("executing request plugin", zap.String("name", p.Info().Name))
+
+		if err := p.Execute(kctx); err != nil {
+			log.Error("failed to execute request plugin",
+				zap.String("name", p.Info().Name),
+				zap.Error(err),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return false
 		}
 	}
 
-	return nil
+	return true
+}
+
+func (r *Router) runResponsePlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
+	for _, p := range flow.Plugins {
+		if p.Type() != PluginTypeResponse {
+			continue
+		}
+
+		log.Debug("executing response plugin", zap.String("name", p.Info().Name))
+
+		if err := p.Execute(kctx); err != nil {
+			log.Error("failed to execute response plugin",
+				zap.String("name", p.Info().Name),
+				zap.Error(err),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return false
+		}
+	}
+
+	return true
+}
+
+func (r *Router) runLuaScripts(w http.ResponseWriter, req *http.Request, flow *Flow, log *zap.Logger) (*http.Request, bool) {
+	for _, script := range flow.Scripts {
+		if script.Source != sourceFile {
+			continue
+		}
+
+		lumosResp, err := r.lumos.SendGet(req.Context(), req, script.Path)
+		if err != nil {
+			log.Error("failed to execute lua script",
+				zap.String("script", script.Path),
+				zap.Error(err),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return nil, false
+		}
+
+		switch lumosResp.Action {
+		case lumosActionContinue:
+			req = applyLumosResponse(req, lumosResp)
+		case lumosActionAbort:
+			log.Error("lumos aborted request")
+			WriteError(w, ClientErrAborted, lumosResp.HTTPStatus)
+
+			return nil, false
+		default:
+			log.Error("unknown action from lumos",
+				zap.String("action", lumosResp.Action),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return nil, false
+		}
+	}
+
+	return req, true
+}
+
+func applyLumosResponse(req *http.Request, lumosResp *LumosJSONResponse) *http.Request {
+	req.Method = lumosResp.Method
+	req.URL.Path = lumosResp.Path
+	req.URL.RawQuery = lumosResp.Query
+	req.Header = lumosResp.Headers
+
+	return req
+}
+
+func (r *Router) buildResponse(ctx context.Context, upstreamResponses []UpstreamResponse, flow *Flow, log *zap.Logger) *http.Response {
+	aggregated := r.aggregator.aggregate(flow.Upstreams, upstreamResponses, flow.Aggregation, log.Named("aggregated"))
+
+	headers := aggregated.Headers
+	if headers == nil {
+		headers = make(http.Header)
+	}
+
+	headers.Set("X-Request-ID", requestIDFromContext(ctx))
+	headers.Set("Content-Type", "application/json; charset=utf-8")
+
+	if log.Core().Enabled(zap.DebugLevel) {
+		log.Debug("aggregated responses",
+			zap.String("strategy", flow.Aggregation.Strategy.String()),
+			zap.Any("aggregated", aggregated),
+		)
+	}
+
+	status := statusFromErrors(aggregated.Errors, aggregated.Partial)
+	body := buildResponseBody(aggregated)
+
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		StatusCode:    status,
+		ContentLength: int64(len(body)),
+		Body:          io.NopCloser(bytes.NewBuffer(body)),
+		Header:        headers,
+	}
+}
+
+func buildResponseBody(aggregated AggregatedResponse) []byte {
+	switch {
+	case len(aggregated.Errors) > 0 && !aggregated.Partial:
+		return mustMarshal(ClientResponse{
+			Data:   nil,
+			Errors: aggregated.Errors,
+		})
+	case aggregated.Partial:
+		return mustMarshal(ClientResponse{
+			Data:   aggregated.Data,
+			Errors: aggregated.Errors,
+		})
+	default:
+		return mustMarshal(ClientResponse{
+			Data:   aggregated.Data,
+			Errors: nil,
+		})
+	}
 }
 
 // copyResponse copies the *http.Response to the http.ResponseWriter.
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	for k, vv := range resp.Header {
+		if _, skip := hopByHopHeaders[k]; skip {
+			continue
+		}
+
 		for _, v := range vv {
-			w.Header().Set(k, v)
+			w.Header().Add(k, v)
 		}
 	}
 
 	w.WriteHeader(resp.StatusCode)
+
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
 		_ = resp.Body.Close()
@@ -283,12 +314,13 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 func mustMarshal(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return []byte(`{"errors":[{"code":"internal","message":"internal error"}]}`)
+		return []byte(`{"errors":[{"code":"INTERNAL"}]}`)
 	}
 
 	return b
 }
 
+// X-Forwarded-For → X-Real-IP → RemoteAddr.
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
@@ -307,16 +339,14 @@ func extractClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+var globalEntropy = ulid.Monotonic(rand.Reader, math.MaxInt64)
+
 func getOrCreateRequestID(r *http.Request) string {
-	requestID := r.Header.Get("X-Request-ID")
-	if requestID != "" {
-		return requestID
+	if id := r.Header.Get("X-Request-ID"); id != "" {
+		return id
 	}
 
-	t := time.Now()
-	entropy := ulid.Monotonic(rand.Reader, math.MaxInt64)
-
-	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), entropy).String())
+	return strings.ToLower(ulid.MustNew(ulid.Timestamp(time.Now()), globalEntropy).String())
 }
 
 func statusFromErrors(errors []ClientError, partial bool) int {
@@ -344,13 +374,7 @@ func statusFromErrors(errors []ClientError, partial bool) int {
 		return http.StatusTooManyRequests
 	case ClientErrPayloadTooLarge:
 		return http.StatusRequestEntityTooLarge
-	case ClientErrUpstreamBodyTooLarge:
-		return http.StatusBadGateway
-	case ClientErrUpstreamUnavailable:
-		return http.StatusBadGateway
-	case ClientErrUpstreamError:
-		return http.StatusBadGateway
-	case ClientErrUpstreamMalformed:
+	case ClientErrUpstreamBodyTooLarge, ClientErrUpstreamUnavailable, ClientErrUpstreamError, ClientErrUpstreamMalformed:
 		return http.StatusBadGateway
 	case ClientErrValueConflict:
 		return http.StatusConflict
@@ -378,62 +402,4 @@ func errorPriority(e ClientError) int {
 	default:
 		return 0
 	}
-}
-
-// luaSendGet sends request data from the client to LuaWorker over a unix socket
-// and returns a modified request in the response with the action field.
-//
-// Action is a special field from LuaWorker that indicates the latest gateway action
-// with a request and can have one of two values - "continue" or "abort".
-func (r *Router) luaSendGet(ctx context.Context, req *http.Request, requestID, scriptPath string) (*LuaJSONResponse, error) {
-	dialer := &net.Dialer{}
-
-	conn, err := dialer.DialContext(ctx, "unix", luaWorkerSocketPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial lua worker socket: %w", err)
-	}
-	defer conn.Close()
-
-	luaReq := LuaJSONData{
-		RequestID:  requestID,
-		Method:     req.Method,
-		Path:       req.URL.Path,
-		Query:      req.URL.RawQuery,
-		Headers:    req.Header.Clone(),
-		Body:       nil,
-		ClientIP:   extractClientIP(req),
-		ScriptPath: scriptPath,
-	}
-
-	msg, err := json.Marshal(&luaReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal lua request: %w", err)
-	}
-
-	if _, err = conn.Write(msg); err != nil {
-		return nil, fmt.Errorf("failed to write data to lua worker socket: %w", err)
-	}
-
-	if len(msg) > luaMsgMaxSize {
-		return nil, fmt.Errorf("request message exceeds max size: %d bytes (limit %d)", len(msg), luaMsgMaxSize)
-	}
-
-	totalSize64 := int64(len(msg)) + int64(luaMsgExtraBufSize)
-	if totalSize64 < 0 || totalSize64 > int64(math.MaxInt) {
-		return nil, fmt.Errorf("calculated size of the response buffer overflows: %d", totalSize64)
-	}
-
-	rawLuaResp := make([]byte, totalSize64)
-
-	_, err = conn.Read(rawLuaResp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read data from lua worker socket: %w", err)
-	}
-
-	var luaResp = new(LuaJSONResponse)
-	if err = json.Unmarshal(rawLuaResp, luaResp); err != nil {
-		return nil, fmt.Errorf("cannot unmarshal response from lua worker socket: %w", err)
-	}
-
-	return luaResp, nil
 }

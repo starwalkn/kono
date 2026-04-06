@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/metric"
@@ -68,28 +69,41 @@ func (m *mockMiddleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
+func newTestRouter(flows []Flow, d dispatcher, a aggregator) *Router {
 	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-				{Status: http.StatusOK, Body: []byte(`"B"`), Err: nil},
-			},
-		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Flows: []Flow{
-			{
-				Path:   "/test/basic/flow",
-				Method: http.MethodGet,
-				Aggregation: Aggregation{
-					Strategy:   strategyArray,
-					BestEffort: false,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
+		chiRouter:  chi.NewMux(),
+		dispatcher: d,
+		aggregator: a,
+		Flows:      flows,
+		log:        zap.NewNop(),
+		metrics:    metric.NewNop(),
 	}
+
+	r.registerFlows()
+
+	return r
+}
+
+func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
+			{Status: http.StatusOK, Body: []byte(`"B"`), Err: nil},
+		},
+	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/basic/flow",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: false,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/basic/flow", nil)
 	rec := httptest.NewRecorder()
@@ -126,30 +140,28 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind: UpstreamTimeout,
-					Err:  errors.New("upstream timeout"),
-				}},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
+			{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
+				Kind: UpstreamTimeout,
+				Err:  errors.New("upstream timeout"),
+			}},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Flows: []Flow{
-			{
-				Path:   "/test/partial/response",
-				Method: http.MethodGet,
-				Aggregation: Aggregation{
-					Strategy:   strategyArray,
-					BestEffort: true,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/partial/response",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: true,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/partial/response", nil)
 	rec := httptest.NewRecorder()
@@ -190,30 +202,28 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind: UpstreamTimeout,
-					Err:  errors.New("upstream timeout"),
-				}},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
+			{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
+				Kind: UpstreamTimeout,
+				Err:  errors.New("upstream timeout"),
+			}},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Flows: []Flow{
-			{
-				Path:   "/test/upstream/error",
-				Method: http.MethodGet,
-				Aggregation: Aggregation{
-					Strategy:   strategyArray,
-					BestEffort: false,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/upstream/error",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: false,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/upstream/error", nil)
 	rec := httptest.NewRecorder()
@@ -249,41 +259,39 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{
-					Status: http.StatusInternalServerError,
-					Body:   nil,
-					Err: &UpstreamError{
-						Kind: "unknown_error_kind", // will be mapped to InternalError
-						Err:  errors.New("upstream unknown_error_kind"),
-					},
-				},
-				{
-					Status: http.StatusInternalServerError,
-					Body:   nil,
-					Err: &UpstreamError{
-						Kind: UpstreamTimeout,
-						Err:  errors.New("upstream timeout"),
-					},
-				},
-			},
-		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Flows: []Flow{
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
 			{
-				Path:   "/test/upstream/error/priority",
-				Method: http.MethodGet,
-				Aggregation: Aggregation{
-					Strategy:   strategyArray,
-					BestEffort: true,
+				Status: http.StatusInternalServerError,
+				Body:   nil,
+				Err: &UpstreamError{
+					Kind: "unknown_error_kind", // will be mapped to InternalError
+					Err:  errors.New("upstream unknown_error_kind"),
+				},
+			},
+			{
+				Status: http.StatusInternalServerError,
+				Body:   nil,
+				Err: &UpstreamError{
+					Kind: UpstreamTimeout,
+					Err:  errors.New("upstream timeout"),
 				},
 			},
 		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/upstream/error/priority",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: true,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/upstream/error/priority", nil)
 	rec := httptest.NewRecorder()
@@ -315,11 +323,7 @@ func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
-	r := &Router{
-		Flows:   nil,
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	r := newTestRouter(nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/test/not/found", nil)
 	rec := httptest.NewRecorder()
@@ -354,27 +358,25 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 		},
 	}
 
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Flows: []Flow{
-			{
-				Path:    "/test/with/plugins",
-				Method:  http.MethodGet,
-				Plugins: []Plugin{requestPlugin, responsePlugin},
-				Aggregation: Aggregation{
-					Strategy:   strategyArray,
-					BestEffort: false,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:    "/test/with/plugins",
+			Method:  http.MethodGet,
+			Plugins: []Plugin{requestPlugin, responsePlugin},
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: false,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/with/plugins", nil)
 	rec := httptest.NewRecorder()
@@ -414,23 +416,21 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Flows: []Flow{
-			{
-				Path:        "/test/with/middleware",
-				Method:      http.MethodGet,
-				Middlewares: []Middleware{&mockMiddleware{}},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:        "/test/with/middleware",
+			Method:      http.MethodGet,
+			Middlewares: []Middleware{&mockMiddleware{}},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/with/middleware", nil)
 	rec := httptest.NewRecorder()
