@@ -2,179 +2,224 @@ package kono
 
 import (
 	"encoding/json"
-	"errors"
-	"maps"
+	"net/http"
+	"slices"
 
 	"go.uber.org/zap"
 )
 
-const (
-	strategyMerge = "merge"
-	strategyArray = "array"
-)
-
 type AggregatedResponse struct {
 	Data    json.RawMessage
-	Errors  []JSONError
+	Headers http.Header
+	Errors  []ClientError
 	Partial bool
 }
 
 type aggregator interface {
-	aggregate(responses []UpstreamResponse, aggregation AggregationConfig) AggregatedResponse
+	aggregate(upstreams []Upstream, responses []UpstreamResponse, aggregation Aggregation, log *zap.Logger) AggregatedResponse
 }
 
-type defaultAggregator struct {
-	log *zap.Logger
-}
+type defaultAggregator struct{}
+
+var (
+	respInternalError = AggregatedResponse{
+		Errors: []ClientError{ClientErrInternal},
+	}
+
+	respUpstreamMalformedError = AggregatedResponse{
+		Errors: []ClientError{ClientErrUpstreamMalformed},
+	}
+)
 
 // aggregate combines multiple upstream responses based on the route's strategy.
 // Single responses are returned as-is. Multiple responses are aggregated either
 // by merging JSON objects ("merge") or creating a JSON array ("array").
-// Upstream errors respect allowPartialResults: partial results may be included
+// Upstream errors respect bestEffort: partial results may be included
 // if allowed; otherwise a single error response is returned.
-func (a *defaultAggregator) aggregate(responses []UpstreamResponse, aggregation AggregationConfig) AggregatedResponse {
+func (a *defaultAggregator) aggregate(upstreams []Upstream, responses []UpstreamResponse, aggregation Aggregation, log *zap.Logger) AggregatedResponse {
 	if len(responses) == 1 {
-		return a.rawResponse(responses)
+		return a.rawResponse(responses[0])
 	}
 
 	switch aggregation.Strategy {
 	case strategyMerge:
-		return a.mergeResponses(responses, aggregation.AllowPartialResults)
+		return a.merged(responses, aggregation, log)
 	case strategyArray:
-		return a.arrayOfResponses(responses, aggregation.AllowPartialResults)
+		return a.arrayed(responses, aggregation, log)
+	case strategyNamespace:
+		return a.namespaced(upstreams, responses, aggregation, log)
 	default:
-		a.log.Error("unknown aggregation strategy", zap.String("strategy", aggregation.Strategy))
+		log.Error("unknown aggregation strategy", zap.String("strategy", aggregation.Strategy.String()))
 		return AggregatedResponse{}
 	}
 }
 
-func (a *defaultAggregator) rawResponse(responses []UpstreamResponse) AggregatedResponse {
-	if len(responses) > 1 {
-		return internalAggregationError()
-	}
-
-	resp := responses[0]
-	if resp.Err != nil {
+func (a *defaultAggregator) rawResponse(response UpstreamResponse) AggregatedResponse {
+	if response.Err != nil {
 		return AggregatedResponse{
-			Data:    nil,
-			Errors:  []JSONError{a.mapUpstreamError(resp.Err)},
-			Partial: false,
+			Errors: []ClientError{a.mapUpstreamError(response.Err)},
 		}
-	}
-
-	if resp.Body == nil {
-		return AggregatedResponse{}
 	}
 
 	return AggregatedResponse{
-		Data:    resp.Body,
-		Errors:  nil,
-		Partial: false,
+		Data:    response.Body,
+		Headers: mergeSuccessfulHeaders([]UpstreamResponse{response}),
 	}
 }
 
-func (a *defaultAggregator) mergeResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
-	merged := make(map[string]interface{})
+type field struct {
+	value interface{} // Upstream response data.
+	owner int         // Upstream index.
+}
 
-	var aggregationErrors []JSONError
+//nolint:gocognit // to be refactor
+func (a *defaultAggregator) merged(responses []UpstreamResponse, aggregation Aggregation, log *zap.Logger) AggregatedResponse {
+	merged := make(map[string]field)
 
-	for _, resp := range responses {
+	var aggregationErrors []ClientError
+
+	hasSuccessful := false
+
+	for idx, resp := range responses {
 		var obj map[string]interface{}
 
-		// Handle upstream error.
 		if resp.Err != nil {
-			mapped := a.mapUpstreamError(resp.Err)
+			clientError := a.mapUpstreamError(resp.Err)
 
-			a.log.Warn(
+			log.Warn(
 				"upstream has errors",
-				zap.Bool("allow_partial_results", allowPartialResults),
+				zap.Bool("best_effort", aggregation.BestEffort),
 				zap.String("upstream_error", resp.Err.Unwrap().Error()),
-				zap.String("mapped_error", mapped.Message),
+				zap.String("client_error", clientError.String()),
 			)
 
-			if !allowPartialResults {
+			if !aggregation.BestEffort {
+				var allErrors []ClientError
+				for _, r := range responses {
+					if r.Err != nil {
+						allErrors = append(allErrors, a.mapUpstreamError(r.Err))
+					}
+				}
+
 				return AggregatedResponse{
-					Data:    nil,
-					Errors:  []JSONError{mapped},
-					Partial: false,
+					Errors: dedupeErrors(allErrors),
 				}
 			}
 
-			aggregationErrors = append(aggregationErrors, mapped)
+			aggregationErrors = append(aggregationErrors, clientError)
 
 			continue
 		}
+
+		hasSuccessful = true
 
 		if resp.Body == nil {
 			continue
 		}
 
-		// Handle JSON unmarshaling error as internal
 		if err := json.Unmarshal(resp.Body, &obj); err != nil {
-			a.log.Warn(
-				"failed to unmarshal response",
-				zap.Bool("allow_partial_results", allowPartialResults),
-				zap.Error(err),
-			)
+			log.Error("cannot unmarshal upstream response", zap.Error(err))
 
-			if !allowPartialResults {
-				return jsonParseError()
+			if !aggregation.BestEffort {
+				return respUpstreamMalformedError
 			}
 
-			aggregationErrors = append(aggregationErrors, JSONError{
-				Code:    ErrorCodeUpstreamMalformed,
-				Message: "upstream malformed",
-			})
+			aggregationErrors = append(aggregationErrors, ClientErrUpstreamMalformed)
 
 			continue
 		}
 
-		maps.Copy(merged, obj)
+		for k, v := range obj {
+			current, exists := merged[k]
+
+			if !exists {
+				merged[k] = field{value: v, owner: idx}
+				continue
+			}
+
+			switch aggregation.ConflictPolicy {
+			case conflictPolicyOverwrite:
+				merged[k] = field{value: v, owner: idx}
+			case conflictPolicyFirst:
+				// We do nothing, since the first value has already been written
+			case conflictPolicyError:
+				return AggregatedResponse{
+					Data:    nil,
+					Errors:  []ClientError{ClientErrValueConflict},
+					Partial: false,
+				}
+			case conflictPolicyPrefer:
+				// If the current owner is preferred, we do nothing
+				if current.owner == aggregation.PreferredUpstream {
+					continue
+				}
+
+				// If the new upstream is preferred, we replace it.
+				if idx == aggregation.PreferredUpstream {
+					merged[k] = field{value: v, owner: idx}
+				}
+
+				// Otherwise, we do nothing
+			}
+		}
 	}
 
-	data, err := json.Marshal(merged)
+	final := make(map[string]interface{}, len(merged))
+	for k, v := range merged {
+		final[k] = v.value
+	}
+
+	data, err := json.Marshal(final)
 	if err != nil {
-		return internalAggregationError()
+		return respInternalError
 	}
 
-	aggregationResponse := AggregatedResponse{
+	return AggregatedResponse{
 		Data:    data,
+		Headers: mergeSuccessfulHeaders(responses),
 		Errors:  dedupeErrors(aggregationErrors),
-		Partial: len(aggregationErrors) > 0,
+		Partial: len(aggregationErrors) > 0 && hasSuccessful,
 	}
-
-	return aggregationResponse
 }
 
-func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allowPartialResults bool) AggregatedResponse {
+func (a *defaultAggregator) arrayed(responses []UpstreamResponse, aggregation Aggregation, log *zap.Logger) AggregatedResponse {
 	var arr []json.RawMessage
 
-	var aggregationErrors []JSONError
+	var aggregationErrors []ClientError
+
+	hasSuccessful := false
 
 	for _, resp := range responses {
 		// Handle upstream error
 		if resp.Err != nil {
-			mapped := a.mapUpstreamError(resp.Err)
+			clientError := a.mapUpstreamError(resp.Err)
 
-			a.log.Warn(
+			log.Warn(
 				"upstream has errors",
-				zap.Bool("allow_partial_results", allowPartialResults),
+				zap.Bool("best_effort", aggregation.BestEffort),
 				zap.String("upstream_error", resp.Err.Unwrap().Error()),
-				zap.String("mapped_error", mapped.Message),
+				zap.String("client_error", clientError.String()),
 			)
 
-			if !allowPartialResults {
+			if !aggregation.BestEffort {
+				var allErrors []ClientError
+				for _, r := range responses {
+					if r.Err != nil {
+						allErrors = append(allErrors, a.mapUpstreamError(r.Err))
+					}
+				}
+
 				return AggregatedResponse{
-					Data:    nil,
-					Errors:  []JSONError{mapped},
-					Partial: false,
+					Errors: dedupeErrors(allErrors),
 				}
 			}
 
-			aggregationErrors = append(aggregationErrors, mapped)
+			aggregationErrors = append(aggregationErrors, clientError)
 
 			continue
 		}
+
+		hasSuccessful = true
 
 		if resp.Body == nil {
 			continue
@@ -185,84 +230,104 @@ func (a *defaultAggregator) arrayOfResponses(responses []UpstreamResponse, allow
 
 	data, err := json.Marshal(arr)
 	if err != nil {
-		return jsonParseError()
+		return respUpstreamMalformedError
 	}
 
 	aggregationResponse := AggregatedResponse{
 		Data:    data,
+		Headers: mergeSuccessfulHeaders(responses),
 		Errors:  dedupeErrors(aggregationErrors),
-		Partial: len(aggregationErrors) > 0,
+		Partial: len(aggregationErrors) > 0 && hasSuccessful,
 	}
 
 	return aggregationResponse
 }
 
-func (a *defaultAggregator) mapUpstreamError(err error) JSONError {
-	var ue *UpstreamError
+func (a *defaultAggregator) namespaced(upstreams []Upstream, responses []UpstreamResponse, aggregation Aggregation, _ *zap.Logger) AggregatedResponse {
+	result := make(map[string]json.RawMessage, len(responses))
 
-	if !errors.As(err, &ue) {
-		return JSONError{
-			Code:    ErrorCodeInternal,
-			Message: "internal error",
-		}
-	}
+	var aggregationErrors []ClientError
+	hasSuccessful := false
 
-	switch ue.Kind { //nolint:exhaustive // will be in future releases
-	case UpstreamTimeout, UpstreamConnection:
-		return JSONError{
-			Code:    ErrorCodeUpstreamUnavailable,
-			Message: "service temporarily unavailable",
-		}
-	case UpstreamBadStatus:
-		return JSONError{
-			Code:    ErrorCodeUpstreamError,
-			Message: "upstream error",
-		}
-	default:
-		return JSONError{
-			Code:    ErrorCodeInternal,
-			Message: "internal error",
-		}
-	}
-}
+	for i, resp := range responses {
+		upstreamName := upstreams[i].Name()
 
-func internalAggregationError() AggregatedResponse {
-	return AggregatedResponse{
-		Data: nil,
-		Errors: []JSONError{
-			{
-				Code:    ErrorCodeInternal,
-				Message: "server error",
-			},
-		},
-		Partial: false,
-	}
-}
+		if resp.Err != nil {
+			clientError := a.mapUpstreamError(resp.Err)
 
-func jsonParseError() AggregatedResponse {
-	return AggregatedResponse{
-		Data: nil,
-		Errors: []JSONError{
-			{
-				Code:    ErrorCodeUpstreamMalformed,
-				Message: "upstream malformed",
-			},
-		},
-		Partial: false,
-	}
-}
+			if !aggregation.BestEffort {
+				return AggregatedResponse{
+					Errors: []ClientError{a.mapUpstreamError(resp.Err)},
+				}
+			}
 
-func dedupeErrors(errs []JSONError) []JSONError {
-	seen := make(map[string]struct{})
-	out := make([]JSONError, 0, len(errs))
-
-	for _, e := range errs {
-		if _, ok := seen[e.Code]; ok {
+			aggregationErrors = append(aggregationErrors, clientError)
 			continue
 		}
 
-		seen[e.Code] = struct{}{}
-		out = append(out, e)
+		hasSuccessful = true
+
+		if resp.Body == nil {
+			result[upstreamName] = json.RawMessage("null")
+			continue
+		}
+
+		result[upstreamName] = resp.Body
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		return respInternalError
+	}
+
+	return AggregatedResponse{
+		Data:    data,
+		Headers: mergeSuccessfulHeaders(responses),
+		Errors:  dedupeErrors(aggregationErrors),
+		Partial: len(aggregationErrors) > 0 && hasSuccessful,
+	}
+}
+
+func mergeSuccessfulHeaders(responses []UpstreamResponse) http.Header {
+	merged := make(http.Header)
+
+	for _, resp := range responses {
+		if resp.Err != nil {
+			continue
+		}
+
+		for k, v := range resp.Headers {
+			merged[k] = v
+		}
+	}
+
+	return merged
+}
+
+func (a *defaultAggregator) mapUpstreamError(err *UpstreamError) ClientError {
+	if err == nil {
+		return ClientErrInternal
+	}
+
+	switch err.Kind { //nolint:exhaustive // will be in future releases
+	case UpstreamTimeout, UpstreamConnection:
+		return ClientErrUpstreamUnavailable
+	case UpstreamBadStatus:
+		return ClientErrUpstreamError
+	case UpstreamBodyTooLarge:
+		return ClientErrUpstreamBodyTooLarge
+	default:
+		return ClientErrInternal
+	}
+}
+
+func dedupeErrors(errs []ClientError) []ClientError {
+	out := make([]ClientError, 0, len(errs))
+
+	for _, e := range errs {
+		if !slices.Contains(out, e) {
+			out = append(out, e)
+		}
 	}
 
 	return out

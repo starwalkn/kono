@@ -11,15 +11,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/metric"
 )
 
-func decodeJSONResponse(t *testing.T, body []byte) JSONResponse {
+func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
 	t.Helper()
 
-	var resp JSONResponse
+	var resp ClientResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("invalid JSON response: %v\nbody=%s", err, body)
 	}
@@ -31,7 +32,7 @@ type mockDispatcher struct {
 	results []UpstreamResponse
 }
 
-func (m *mockDispatcher) dispatch(_ *Route, _ *http.Request) []UpstreamResponse {
+func (m *mockDispatcher) dispatch(_ *Flow, _ *http.Request) []UpstreamResponse {
 	return m.results
 }
 
@@ -68,28 +69,41 @@ func (m *mockMiddleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
+func newTestRouter(flows []Flow, d dispatcher, a aggregator) *Router {
 	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-				{Status: http.StatusOK, Body: []byte(`"B"`), Err: nil},
-			},
-		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
-			{
-				Path:   "/test/basic/flow",
-				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
+		chiRouter:  chi.NewMux(),
+		dispatcher: d,
+		aggregator: a,
+		Flows:      flows,
+		log:        zap.NewNop(),
+		metrics:    metric.NewNop(),
 	}
+
+	r.registerFlows()
+
+	return r
+}
+
+func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
+			{Status: http.StatusOK, Body: []byte(`"B"`), Err: nil},
+		},
+	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/basic/flow",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: false,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/basic/flow", nil)
 	rec := httptest.NewRecorder()
@@ -126,30 +140,28 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind: UpstreamTimeout,
-					Err:  errors.New("upstream timeout"),
-				}},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
+			{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
+				Kind: UpstreamTimeout,
+				Err:  errors.New("upstream timeout"),
+			}},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
-			{
-				Path:   "/test/partial/response",
-				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: true,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/partial/response",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: true,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/partial/response", nil)
 	rec := httptest.NewRecorder()
@@ -175,8 +187,8 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
 	}
 
-	if resp.Errors[0].Code != ErrorCodeUpstreamUnavailable && resp.Errors[0].Message != "service temporarily unavailable" {
-		t.Fatalf("unexpected error code or message %s %s", resp.Errors[0].Code, resp.Errors[0].Message)
+	if resp.Errors[0] != ClientErrUpstreamUnavailable {
+		t.Fatalf("unexpected error code: %s", resp.Errors[0])
 	}
 
 	var got []string
@@ -190,30 +202,28 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-				{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-					Kind: UpstreamTimeout,
-					Err:  errors.New("upstream timeout"),
-				}},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
+			{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
+				Kind: UpstreamTimeout,
+				Err:  errors.New("upstream timeout"),
+			}},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
-			{
-				Path:   "/test/upstream/error",
-				Method: http.MethodGet,
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/upstream/error",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: false,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/upstream/error", nil)
 	rec := httptest.NewRecorder()
@@ -223,8 +233,8 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", res.StatusCode)
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", res.StatusCode)
 	}
 
 	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
@@ -243,17 +253,77 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
 	}
 
-	if resp.Errors[0].Code != ErrorCodeUpstreamUnavailable && resp.Errors[0].Message != "service temporarily unavailable" {
-		t.Fatalf("unexpected error code or message %s %s", resp.Errors[0].Code, resp.Errors[0].Message)
+	if resp.Errors[0] != ClientErrUpstreamUnavailable {
+		t.Fatalf("unexpected error code: %s", resp.Errors[0])
+	}
+}
+
+func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{
+				Status: http.StatusInternalServerError,
+				Body:   nil,
+				Err: &UpstreamError{
+					Kind: "unknown_error_kind", // will be mapped to InternalError
+					Err:  errors.New("upstream unknown_error_kind"),
+				},
+			},
+			{
+				Status: http.StatusInternalServerError,
+				Body:   nil,
+				Err: &UpstreamError{
+					Kind: UpstreamTimeout,
+					Err:  errors.New("upstream timeout"),
+				},
+			},
+		},
+	}
+
+	flows := []Flow{
+		{
+			Path:   "/test/upstream/error/priority",
+			Method: http.MethodGet,
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: true,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
+
+	req := httptest.NewRequest(http.MethodGet, "/test/upstream/error/priority", nil)
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", res.StatusCode)
+	}
+
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("unexpected Content-Type: %s", ct)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+
+	resp := decodeJSONResponse(t, body)
+
+	if resp.Data != nil {
+		t.Fatalf("unexpected data: %v", resp.Data)
+	}
+
+	if len(resp.Errors) != 2 {
+		t.Fatalf("expected 2 error, got %d", len(resp.Errors))
 	}
 }
 
 func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
-	r := &Router{
-		Routes:  nil,
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
-	}
+	r := newTestRouter(nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/test/not/found", nil)
 	rec := httptest.NewRecorder()
@@ -288,27 +358,25 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 		},
 	}
 
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
-			{
-				Path:    "/test/with/plugins",
-				Method:  http.MethodGet,
-				Plugins: []Plugin{requestPlugin, responsePlugin},
-				Aggregation: AggregationConfig{
-					Strategy:            strategyArray,
-					AllowPartialResults: false,
-				},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:    "/test/with/plugins",
+			Method:  http.MethodGet,
+			Plugins: []Plugin{requestPlugin, responsePlugin},
+			Aggregation: Aggregation{
+				Strategy:   strategyArray,
+				BestEffort: false,
+			},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/with/plugins", nil)
 	rec := httptest.NewRecorder()
@@ -348,23 +416,21 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
-	r := &Router{
-		dispatcher: &mockDispatcher{
-			results: []UpstreamResponse{
-				{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
-			},
+	d := &mockDispatcher{
+		results: []UpstreamResponse{
+			{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
 		},
-		aggregator: &defaultAggregator{log: zap.NewNop()},
-		Routes: []Route{
-			{
-				Path:        "/test/with/middleware",
-				Method:      http.MethodGet,
-				Middlewares: []Middleware{&mockMiddleware{}},
-			},
-		},
-		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
 	}
+
+	flows := []Flow{
+		{
+			Path:        "/test/with/middleware",
+			Method:      http.MethodGet,
+			Middlewares: []Middleware{&mockMiddleware{}},
+		},
+	}
+
+	r := newTestRouter(flows, d, &defaultAggregator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/with/middleware", nil)
 	rec := httptest.NewRecorder()

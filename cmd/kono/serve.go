@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,8 +15,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono"
-	"github.com/starwalkn/kono/internal/app"
 	"github.com/starwalkn/kono/internal/logger"
+	"github.com/starwalkn/kono/internal/server"
 )
 
 var serveCmd = &cobra.Command{
@@ -35,7 +37,7 @@ func runServe() error {
 		cfgPath = os.Getenv("KONO_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = "./kono.json"
+		cfgPath = fallbackConfigPath
 	}
 
 	cfg, err := kono.LoadConfig(cfgPath)
@@ -48,15 +50,17 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	server := app.NewServer(cfg, log)
+	srv := server.New(cfg.Gateway, log)
 
 	go func() {
-		if err = server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err = srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal("server error", zap.Error(err))
 		}
 	}()
 
 	log.Info("server started")
+
+	stopPprof := startPprofServer(cfg.Gateway.Server.Pprof, log)
 
 	<-ctx.Done()
 	log.Info("shutdown signal received")
@@ -64,11 +68,52 @@ func runServe() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:mnd // internal timeout
 	defer cancel()
 
-	if err = server.Stop(shutdownCtx); err != nil {
+	if err = srv.Stop(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", zap.Error(err))
 	}
+
+	stopPprof(shutdownCtx)
 
 	log.Info("server stopped")
 
 	return nil
+}
+
+func startPprofServer(cfg kono.PprofConfig, log *zap.Logger) func(ctx context.Context) {
+	if !cfg.Enabled {
+		return func(_ context.Context) {}
+	}
+
+	srv := buildPprofServer(cfg.Port)
+
+	go func() {
+		log.Info("pprof listener started", zap.Int("port", cfg.Port))
+
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("pprof server error", zap.Error(err))
+		}
+	}()
+
+	return func(ctx context.Context) {
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Error("pprof server shutdown error", zap.Error(err))
+		}
+	}
+}
+
+func buildPprofServer(port int) *http.Server {
+	pprofMux := http.NewServeMux()
+	pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+	pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	return &http.Server{
+		Addr:         fmt.Sprintf("localhost:%d", port),
+		Handler:      pprofMux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 }

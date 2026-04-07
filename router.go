@@ -2,6 +2,7 @@ package kono
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -9,9 +10,11 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/oklog/ulid/v2"
 	"go.uber.org/zap"
 
@@ -19,10 +22,23 @@ import (
 	"github.com/starwalkn/kono/internal/ratelimit"
 )
 
+var hopByHopHeaders = map[string]struct{}{
+	"Content-Length":    {},
+	"Transfer-Encoding": {},
+	"Connection":        {},
+	"Trailer":           {},
+	"Date":              {},
+	"Server":            {},
+}
+
 type Router struct {
-	dispatcher dispatcher
-	aggregator aggregator
-	Routes     []Route
+	chiRouter *chi.Mux
+
+	lumos          *lumos
+	dispatcher     dispatcher
+	aggregator     aggregator
+	Flows          []Flow
+	TrustedProxies []string
 
 	log     *zap.Logger
 	metrics metric.Metrics
@@ -30,64 +46,12 @@ type Router struct {
 	rateLimiter *ratelimit.RateLimit
 }
 
-type RouterConfigSet struct {
-	Version     string
-	Routes      []RouteConfig
-	Middlewares []MiddlewareConfig
-	Features    []FeatureConfig
-	Metrics     MetricsConfig
-}
-
-func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
-	var (
-		routeConfigs            = routerConfigSet.Routes
-		globalMiddlewareConfigs = routerConfigSet.Middlewares
-		featureConfigs          = routerConfigSet.Features
-		metricsConfig           = routerConfigSet.Metrics
-	)
-
-	router := initMinimalRouter(len(routeConfigs), log)
-
-	if metricsConfig.Enabled {
-		switch metricsConfig.Provider {
-		case "prometheus":
-			router.metrics = metric.NewPrometheus()
-		default:
-			router.metrics = metric.NewNop()
-		}
-	}
-
-	for _, fcfg := range featureConfigs {
-		//nolint:gocritic // for the future
-		switch fcfg.Name {
-		case "ratelimit":
-			if fcfg.Enabled {
-				router.rateLimiter = ratelimit.New(fcfg.Config)
-
-				err := router.rateLimiter.Start()
-				if err != nil {
-					log.Fatal("failed to start ratelimit feature", zap.Error(err))
-				}
-			}
-		}
-	}
-
-	// Global middlewares.
-	globalMiddlewareIndices, globalMiddlewares := initGlobalMiddlewares(globalMiddlewareConfigs, log)
-
-	for _, rcfg := range routeConfigs {
-		router.Routes = append(router.Routes, initRoute(rcfg, globalMiddlewares, globalMiddlewareIndices, log))
-	}
-
-	return router
-}
-
 // ServeHTTP handles incoming HTTP requests through the full router pipeline.
 //
 // The processing steps are:
 //
 // 1. Rate limiting (if enabled) – rejects requests exceeding allowed limits.
-// 2. Route matching – finds a Route that matches the request method and path.
+// 2. Flow matching – finds a Flow that matches the request method and path.
 //   - If no route is found, responds with 404.
 //
 // 3. Middleware execution – wraps the route handler with all configured middlewares in reverse order.
@@ -108,187 +72,241 @@ func NewRouter(routerConfigSet RouterConfigSet, log *zap.Logger) *Router {
 //
 // The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.metrics.IncRequestsTotal()
-
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
 
-	matchedRoute := r.match(req)
-	if matchedRoute == nil {
-		r.log.Error("no route matched", zap.String("request_uri", req.URL.RequestURI()))
-		r.metrics.IncFailedRequestsTotal(metric.FailReasonNoMatchedRoute)
+	clientIP := extractClientIP(req)
+	req = req.WithContext(withClientIP(req.Context(), clientIP))
 
-		http.NotFound(w, req)
-
+	if !r.allowRequest(w, clientIP) {
 		return
 	}
 
-	if r.rateLimiter != nil {
-		if !r.rateLimiter.Allow(extractClientIP(req)) {
-			WriteError(w, ErrorCodeRateLimitExceeded, "rate limit exceeded", req.Header.Get("X-Request-ID"), http.StatusTooManyRequests)
-			return
-		}
-	}
-
-	var routeHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		start := time.Now()
-		defer r.metrics.UpdateRequestsDuration(matchedRoute.Path, matchedRoute.Method, start)
-
-		// Kono internal context
-		tctx := newContext(req)
-
-		requestID := getOrCreateRequestID(req)
-
-		// Request-phase plugins
-		for _, p := range matchedRoute.Plugins {
-			if p.Type() != PluginTypeRequest {
-				continue
-			}
-
-			r.log.Debug("executing request plugin", zap.String("name", p.Info().Name))
-
-			if err := p.Execute(tctx); err != nil {
-				r.log.Error("failed to execute request plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
-
-				return
-			}
-		}
-
-		// Upstream dispatch
-		responses := r.dispatcher.dispatch(matchedRoute, req)
-		if responses == nil {
-			// Currently, responses can only be nil if the body size limit is exceeded or body read fails
-			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
-			WriteError(w, ErrorCodePayloadTooLarge, "request body too large", requestID, http.StatusRequestEntityTooLarge)
-
-			return
-		}
-
-		headers := http.Header{
-			"X-Request-ID": []string{requestID},
-			// TODO: Think about several encoding options
-			"Content-Type": []string{"application/json; charset=utf-8"},
-		}
-
-		// Sets backends response headers
-		for _, resp := range responses {
-			// TODO: Consider a blacklist of returning headers
-			for k, v := range resp.Headers {
-				headers[k] = v
-			}
-		}
-
-		r.log.Debug("dispatched responses", zap.Any("responses", responses))
-
-		// Aggregate upstream responses
-		aggregated := r.aggregator.aggregate(responses, matchedRoute.Aggregation)
-		attachRequestID(aggregated.Errors, requestID)
-
-		r.log.Debug("aggregated responses",
-			zap.String("strategy", matchedRoute.Aggregation.Strategy),
-			zap.Any("aggregated", aggregated),
-		)
-
-		var responseBody []byte
-
-		status := http.StatusOK
-		switch {
-		case len(aggregated.Errors) > 0 && !aggregated.Partial:
-			status = http.StatusInternalServerError
-
-			responseBody = mustMarshal(JSONResponse{
-				Data:   nil,
-				Errors: aggregated.Errors,
-			})
-		case aggregated.Partial:
-			status = http.StatusPartialContent
-
-			responseBody = mustMarshal(JSONResponse{
-				Data:   aggregated.Data,
-				Errors: aggregated.Errors,
-			})
-		default:
-			responseBody = mustMarshal(JSONResponse{
-				Data:   aggregated.Data,
-				Errors: nil,
-			})
-		}
-
-		resp := &http.Response{
-			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
-			StatusCode: status,
-			Body:       io.NopCloser(bytes.NewReader(responseBody)),
-			Header:     headers,
-		}
-
-		// Sets the response to the internal context for plugins
-		tctx.SetResponse(resp)
-
-		// Response-phase plugins
-		for _, p := range matchedRoute.Plugins {
-			if p.Type() != PluginTypeResponse {
-				continue
-			}
-
-			r.log.Debug("executing response plugin", zap.String("name", p.Info().Name))
-
-			if err := p.Execute(tctx); err != nil {
-				r.log.Error("failed to execute response plugin", zap.String("name", p.Info().Name), zap.Error(err))
-				WriteError(w, ErrorCodeInternal, "internal error", requestID, http.StatusInternalServerError)
-
-				return
-			}
-		}
-
-		r.metrics.IncResponsesTotal(matchedRoute.Path, tctx.Response().StatusCode) //nolint:bodyclose // body closes in copyResponse
-
-		// Write final output.
-		copyResponse(w, tctx.Response()) //nolint:bodyclose // body closes in copyResponse
-	})
-
-	for i := len(matchedRoute.Middlewares) - 1; i >= 0; i-- {
-		routeHandler = matchedRoute.Middlewares[i].Handler(routeHandler)
-	}
-
-	routeHandler.ServeHTTP(w, req)
+	r.chiRouter.ServeHTTP(w, req)
 }
 
-// match matches the given request to a route.
-func (r *Router) match(req *http.Request) *Route {
-	for i := range r.Routes {
-		route := &r.Routes[i]
+func (r *Router) allowRequest(w http.ResponseWriter, clientIP string) bool {
+	if r.rateLimiter == nil {
+		return true
+	}
 
-		if route.Method != "" && !strings.EqualFold(route.Method, req.Method) {
+	if r.rateLimiter.Allow(clientIP) {
+		return true
+	}
+
+	r.metrics.IncFailedRequestsTotal(metric.FailReasonTooManyRequests)
+	WriteError(w, ClientErrRateLimitExceeded, http.StatusTooManyRequests)
+
+	return false
+}
+
+func (r *Router) newFlowHandler(flow *Flow) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		start := time.Now()
+		defer r.metrics.UpdateRequestsDuration(flow.Path, flow.Method, start)
+
+		requestID := getOrCreateRequestID(req)
+		req = req.WithContext(withRequestID(req.Context(), requestID))
+		req = req.WithContext(withRoute(req.Context(), flow.Path))
+
+		log := r.log.With(zap.String("request_id", requestID))
+
+		kctx := newContext(req)
+
+		if !r.runRequestPlugins(w, kctx, flow, log) {
+			return
+		}
+
+		req, ok := r.runLuaScripts(w, req, flow, log)
+		if !ok {
+			return
+		}
+
+		upstreamResponses := r.dispatcher.dispatch(flow, req)
+		if upstreamResponses == nil {
+			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
+			WriteError(w, ClientErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
+
+			return
+		}
+
+		if r.log.Core().Enabled(zap.DebugLevel) {
+			r.log.Debug("dispatched responses", zap.Any("responses", upstreamResponses))
+		}
+
+		httpResp := r.buildResponse(req.Context(), upstreamResponses, flow, log) //nolint:bodyclose // closes in copyResponse
+
+		kctx.SetResponse(httpResp)
+
+		if !r.runResponsePlugins(w, kctx, flow, log) {
+			return
+		}
+
+		w.Header().Set("Content-Length", strconv.Itoa(int(kctx.Response().ContentLength))) //nolint:bodyclose // closes in copyResponse
+
+		r.metrics.IncRequestsTotal(flow.Path, req.Method, kctx.Response().StatusCode) //nolint:bodyclose // closes in copyResponse
+		copyResponse(w, kctx.Response())                                              //nolint:bodyclose // closes in copyResponse
+	})
+}
+
+func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
+	for _, p := range flow.Plugins {
+		if p.Type() != PluginTypeRequest {
 			continue
 		}
 
-		if route.Path != "" && req.URL.Path == route.Path {
-			return route
+		log.Debug("executing request plugin", zap.String("name", p.Info().Name))
+
+		if err := p.Execute(kctx); err != nil {
+			log.Error("failed to execute request plugin",
+				zap.String("name", p.Info().Name),
+				zap.Error(err),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return false
 		}
 	}
 
-	return nil
+	return true
+}
+
+func (r *Router) runResponsePlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
+	for _, p := range flow.Plugins {
+		if p.Type() != PluginTypeResponse {
+			continue
+		}
+
+		log.Debug("executing response plugin", zap.String("name", p.Info().Name))
+
+		if err := p.Execute(kctx); err != nil {
+			log.Error("failed to execute response plugin",
+				zap.String("name", p.Info().Name),
+				zap.Error(err),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return false
+		}
+	}
+
+	return true
+}
+
+func (r *Router) runLuaScripts(w http.ResponseWriter, req *http.Request, flow *Flow, log *zap.Logger) (*http.Request, bool) {
+	for _, script := range flow.Scripts {
+		if script.Source != sourceFile {
+			continue
+		}
+
+		lumosResp, err := r.lumos.SendGet(req.Context(), req, script.Path)
+		if err != nil {
+			log.Error("failed to execute lua script",
+				zap.String("script", script.Path),
+				zap.Error(err),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return nil, false
+		}
+
+		switch lumosResp.Action {
+		case lumosActionContinue:
+			req = applyLumosResponse(req, lumosResp)
+		case lumosActionAbort:
+			log.Error("lumos aborted request")
+			WriteError(w, ClientErrAborted, lumosResp.HTTPStatus)
+
+			return nil, false
+		default:
+			log.Error("unknown action from lumos",
+				zap.String("action", lumosResp.Action),
+			)
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return nil, false
+		}
+	}
+
+	return req, true
+}
+
+func applyLumosResponse(req *http.Request, lumosResp *LumosJSONResponse) *http.Request {
+	req.Method = lumosResp.Method
+	req.URL.Path = lumosResp.Path
+	req.URL.RawQuery = lumosResp.Query
+	req.Header = lumosResp.Headers
+
+	return req
+}
+
+func (r *Router) buildResponse(ctx context.Context, upstreamResponses []UpstreamResponse, flow *Flow, log *zap.Logger) *http.Response {
+	aggregated := r.aggregator.aggregate(flow.Upstreams, upstreamResponses, flow.Aggregation, log.Named("aggregated"))
+
+	headers := aggregated.Headers
+	if headers == nil {
+		headers = make(http.Header)
+	}
+
+	headers.Set("X-Request-ID", requestIDFromContext(ctx))
+	headers.Set("Content-Type", "application/json; charset=utf-8")
+
+	if log.Core().Enabled(zap.DebugLevel) {
+		log.Debug("aggregated responses",
+			zap.String("strategy", flow.Aggregation.Strategy.String()),
+			zap.Any("aggregated", aggregated),
+		)
+	}
+
+	status := statusFromErrors(aggregated.Errors, aggregated.Partial)
+	body := buildResponseBody(aggregated)
+
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		StatusCode:    status,
+		ContentLength: int64(len(body)),
+		Body:          io.NopCloser(bytes.NewBuffer(body)),
+		Header:        headers,
+	}
+}
+
+func buildResponseBody(aggregated AggregatedResponse) []byte {
+	switch {
+	case len(aggregated.Errors) > 0 && !aggregated.Partial:
+		return mustMarshal(ClientResponse{
+			Data:   nil,
+			Errors: aggregated.Errors,
+		})
+	case aggregated.Partial:
+		return mustMarshal(ClientResponse{
+			Data:   aggregated.Data,
+			Errors: aggregated.Errors,
+		})
+	default:
+		return mustMarshal(ClientResponse{
+			Data:   aggregated.Data,
+			Errors: nil,
+		})
+	}
 }
 
 // copyResponse copies the *http.Response to the http.ResponseWriter.
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	for k, vv := range resp.Header {
+		if _, skip := hopByHopHeaders[k]; skip {
+			continue
+		}
+
 		for _, v := range vv {
-			w.Header().Set(k, v)
+			w.Header().Add(k, v)
 		}
 	}
 
 	w.WriteHeader(resp.StatusCode)
+
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
 		_ = resp.Body.Close()
-	}
-}
-
-func attachRequestID(errs []JSONError, requestID string) {
-	for i := range errs {
-		errs[i].RequestID = requestID
 	}
 }
 
@@ -296,12 +314,13 @@ func attachRequestID(errs []JSONError, requestID string) {
 func mustMarshal(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return []byte(`{"errors":[{"code":"internal","message":"internal error"}]}`)
+		return []byte(`{"errors":[{"code":"INTERNAL"}]}`)
 	}
 
 	return b
 }
 
+// X-Forwarded-For → X-Real-IP → RemoteAddr.
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
@@ -320,14 +339,67 @@ func extractClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+var globalEntropy = ulid.Monotonic(rand.Reader, math.MaxInt64)
+
 func getOrCreateRequestID(r *http.Request) string {
-	requestID := r.Header.Get("X-Request-ID")
-	if requestID != "" {
-		return requestID
+	if id := r.Header.Get("X-Request-ID"); id != "" {
+		return id
 	}
 
-	t := time.Now()
-	entropy := ulid.Monotonic(rand.Reader, math.MaxInt64)
+	return strings.ToLower(ulid.MustNew(ulid.Timestamp(time.Now()), globalEntropy).String())
+}
 
-	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), entropy).String())
+func statusFromErrors(errors []ClientError, partial bool) int {
+	if partial {
+		return http.StatusPartialContent
+	}
+
+	if len(errors) == 0 {
+		return http.StatusOK
+	}
+
+	var selected ClientError
+	maxPriority := -1
+
+	for _, e := range errors {
+		p := errorPriority(e)
+		if p > maxPriority {
+			maxPriority = p
+			selected = e
+		}
+	}
+
+	switch selected {
+	case ClientErrRateLimitExceeded:
+		return http.StatusTooManyRequests
+	case ClientErrPayloadTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case ClientErrUpstreamBodyTooLarge, ClientErrUpstreamUnavailable, ClientErrUpstreamError, ClientErrUpstreamMalformed:
+		return http.StatusBadGateway
+	case ClientErrValueConflict:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+//nolint:mnd // error priority be configurable in future releases
+func errorPriority(e ClientError) int {
+	switch e {
+	case ClientErrRateLimitExceeded:
+		return 100
+	case ClientErrPayloadTooLarge,
+		ClientErrUpstreamBodyTooLarge:
+		return 90
+	case ClientErrValueConflict:
+		return 80
+	case ClientErrUpstreamUnavailable,
+		ClientErrUpstreamError,
+		ClientErrUpstreamMalformed:
+		return 50
+	case ClientErrInternal:
+		return 10
+	default:
+		return 0
+	}
 }

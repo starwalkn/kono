@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/starwalkn/kono/internal/metric"
 )
@@ -18,12 +17,18 @@ import (
 const maxBodySize = 5 << 20 // 5MB
 
 type dispatcher interface {
-	dispatch(route *Route, original *http.Request) []UpstreamResponse
+	dispatch(route *Flow, original *http.Request) []UpstreamResponse
 }
 
 type defaultDispatcher struct {
 	log     *zap.Logger
 	metrics metric.Metrics
+}
+
+var wgPool = sync.Pool{
+	New: func() interface{} {
+		return &sync.WaitGroup{}
+	},
 }
 
 // dispatch sends the incoming HTTP request to all upstreams configured for the given route.
@@ -32,16 +37,18 @@ type defaultDispatcher struct {
 // required body, status code mapping, max response size), updates metrics, and collects
 // the responses into a slice. Any policy violations or request errors are wrapped in
 // UpstreamError. The dispatcher waits for all upstream requests to complete before returning.
-func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []UpstreamResponse {
-	results := make([]UpstreamResponse, len(route.Upstreams))
+func (d *defaultDispatcher) dispatch(flow *Flow, original *http.Request) []UpstreamResponse {
+	log := d.log.With(zap.String("request_id", requestIDFromContext(original.Context())))
+
+	results := make([]UpstreamResponse, len(flow.Upstreams))
 
 	originalBody, readErr := io.ReadAll(io.LimitReader(original.Body, maxBodySize+1))
 	if readErr != nil {
-		d.log.Error("cannot read body", zap.Error(readErr))
+		log.Error("cannot read body", zap.Error(readErr))
 		return nil
 	}
 	if readErr = original.Body.Close(); readErr != nil {
-		d.log.Warn("cannot close original request body", zap.Error(readErr))
+		log.Warn("cannot close original request body", zap.Error(readErr))
 	}
 
 	if len(originalBody) > maxBodySize {
@@ -49,14 +56,10 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 		return nil
 	}
 
-	var (
-		wg  = sync.WaitGroup{}
-		sem = semaphore.NewWeighted(route.MaxParallelUpstreams)
-	)
+	wg := wgPool.Get().(*sync.WaitGroup)
+	wg.Add(len(flow.Upstreams))
 
-	for i, u := range route.Upstreams {
-		wg.Add(1)
-
+	for i, u := range flow.Upstreams {
 		go func(i int, u Upstream, originalBody []byte) {
 			defer wg.Done()
 
@@ -64,8 +67,8 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 			ctx := original.Context()
 
-			if err := sem.Acquire(ctx, 1); err != nil {
-				d.log.Error("cannot acquire semaphore", zap.Error(err))
+			if err := flow.sem.Acquire(ctx, 1); err != nil {
+				log.Error("cannot acquire semaphore", zap.Error(err))
 
 				results[i] = UpstreamResponse{
 					Err: &UpstreamError{
@@ -76,12 +79,14 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 
 				return
 			}
-			defer sem.Release(1)
+			defer flow.sem.Release(1)
+
+			d.metrics.IncUpstreamRequestsTotal(flow.Path, u.Name())
 
 			resp := u.Call(ctx, original, originalBody)
 			if resp.Err != nil {
-				d.metrics.IncFailedRequestsTotal(metric.FailReasonUpstreamError)
-				d.log.Error("upstream request failed",
+				d.metrics.IncUpstreamErrorsTotal(flow.Path, u.Name(), string(resp.Err.Kind))
+				log.Error("upstream request failed",
 					zap.String("name", u.Name()),
 					zap.Error(resp.Err.Unwrap()),
 				)
@@ -97,16 +102,12 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 				errs = append(errs, errors.New("empty body not allowed by upstream policy"))
 			}
 
-			if mapped, ok := upstreamPolicy.MapStatusCodes[resp.Status]; ok {
-				resp.Status = mapped
-			}
-
 			if len(upstreamPolicy.AllowedStatuses) > 0 && !slices.Contains(upstreamPolicy.AllowedStatuses, resp.Status) {
 				errs = append(errs, fmt.Errorf("status %d not allowed by upstream policy", resp.Status))
 			}
 
 			if len(errs) > 0 {
-				d.metrics.IncFailedRequestsTotal(metric.FailReasonPolicyViolation)
+				d.metrics.IncUpstreamErrorsTotal(flow.Path, u.Name(), "policy_violation")
 
 				if resp.Err == nil {
 					resp.Err = &UpstreamError{
@@ -117,13 +118,14 @@ func (d *defaultDispatcher) dispatch(route *Route, original *http.Request) []Ups
 				}
 			}
 
-			d.metrics.UpdateUpstreamLatency(route.Path, route.Method, u.Name(), time.Since(start))
+			d.metrics.UpdateUpstreamLatency(flow.Path, u.Name(), start)
 
 			results[i] = *resp
 		}(i, u, originalBody)
 	}
 
 	wg.Wait()
+	wgPool.Put(wg)
 
 	return results
 }
