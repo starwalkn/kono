@@ -64,6 +64,8 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Content-Encoding", m.alg)
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Del("Content-Length")
 
 		var writer io.WriteCloser
 		var err error

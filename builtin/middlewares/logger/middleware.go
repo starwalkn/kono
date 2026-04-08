@@ -72,6 +72,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			zap.Duration("duration", duration),
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
+			zap.String("request_id", r.Header.Get("X-Request-ID")),
 		}
 
 		if m.logBody && len(bodyCopy) > 0 {

@@ -40,7 +40,7 @@ func TestRecovererMiddleware_PanicRecovered(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	if body != `{"error": "internal server error"}` {
+	if body != `{"errors":[{"code":"INTERNAL"}]}` {
 		t.Fatalf("unexpected body: %s", body)
 	}
 
