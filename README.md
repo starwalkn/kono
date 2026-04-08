@@ -9,16 +9,16 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 </p>
 
 <p align="center">
-  <a href="https://golang.org">
+  <a href="https://golang.org" style="text-decoration: none">
     <img src="https://img.shields.io/badge/go-1.25.4-blue" alt="Go Version"/>
   </a>
-  <a href="LICENSE">
+  <a href="LICENSE" style="text-decoration: none">
     <img src="https://img.shields.io/github/license/starwalkn/kono" alt="License"/>
   </a>
-  <a href="https://goreportcard.com/report/github.com/starwalkn/kono">
+  <a href="https://goreportcard.com/report/github.com/starwalkn/kono" style="text-decoration: none">
     <img src="https://goreportcard.com/badge/github.com/starwalkn/kono" alt="Go Report Card"/>
   </a>
-  <a href="https://codecov.io/gh/starwalkn/kono">
+  <a href="https://codecov.io/gh/starwalkn/kono" style="text-decoration: none">
     <img src="https://codecov.io/gh/starwalkn/kono/branch/master/graph/badge.svg" alt="codecov"/>
   </a>
 </p>
