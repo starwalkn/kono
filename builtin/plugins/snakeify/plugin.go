@@ -8,17 +8,17 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/starwalkn/kono"
+	"github.com/starwalkn/kono/sdk"
 )
 
 type Plugin struct{}
 
-func NewPlugin() kono.Plugin {
+func NewPlugin() sdk.Plugin {
 	return &Plugin{}
 }
 
-func (p *Plugin) Info() kono.PluginInfo {
-	return kono.PluginInfo{
+func (p *Plugin) Info() sdk.PluginInfo {
+	return sdk.PluginInfo{
 		Name:        "snakeify",
 		Description: "The plugin can be used to transform JSON field names in the response into the snake_case style.",
 		Version:     "v1",
@@ -26,32 +26,36 @@ func (p *Plugin) Info() kono.PluginInfo {
 	}
 }
 
-func (p *Plugin) Type() kono.PluginType {
-	return kono.PluginTypeResponse
+func (p *Plugin) Type() sdk.PluginType {
+	return sdk.PluginTypeResponse
 }
 
 func (p *Plugin) Init(_ map[string]interface{}) {}
 
-func (p *Plugin) Execute(ctx kono.Context) error {
+func (p *Plugin) Execute(ctx sdk.Context) error {
 	if ctx.Response() == nil || ctx.Response().Body == nil {
 		return nil
 	}
 
-	var data map[string]interface{}
-
 	buf := new(bytes.Buffer)
-	_, _ = buf.ReadFrom(ctx.Response().Body)
-	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
-		return fmt.Errorf("snakeify: cannot unmarshal JSON: %w", err)
+	if _, err := buf.ReadFrom(ctx.Response().Body); err != nil {
+		return fmt.Errorf("snakeify: cannot read body: %w", err)
 	}
 
-	newData := make(map[string]interface{})
-	for k, v := range data {
-		newKey := camelToSnake(k)
-		newData[newKey] = v
+	if buf.Len() == 0 {
+		ctx.Response().Body = io.NopCloser(buf)
+		return nil
 	}
 
-	newBody, err := json.Marshal(newData)
+	var raw interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		ctx.Response().Body = io.NopCloser(buf)
+		return nil //nolint:nilerr // normal behaviour
+	}
+
+	transformed := transformKeys(raw)
+
+	newBody, err := json.Marshal(transformed)
 	if err != nil {
 		return fmt.Errorf("snakeify: cannot marshal JSON: %w", err)
 	}
@@ -61,12 +65,35 @@ func (p *Plugin) Execute(ctx kono.Context) error {
 	return nil
 }
 
-func camelToSnake(s string) string {
-	re1 := regexp.MustCompile("(.)([A-Z][a-z]+)")
-	re2 := regexp.MustCompile("([a-z0-9])([A-Z])")
+func transformKeys(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		newMap := make(map[string]interface{}, len(val))
+		for k, child := range val {
+			newMap[camelToSnake(k)] = transformKeys(child)
+		}
 
-	s = re1.ReplaceAllString(s, "${1}_${2}")
-	s = re2.ReplaceAllString(s, "${1}_${2}")
+		return newMap
+	case []interface{}:
+		newSlice := make([]interface{}, len(val))
+		for i, item := range val {
+			newSlice[i] = transformKeys(item)
+		}
+
+		return newSlice
+	default:
+		return val
+	}
+}
+
+var (
+	reUpper    = regexp.MustCompile("(.)([A-Z][a-z]+)")
+	reUpperSeq = regexp.MustCompile("([a-z0-9])([A-Z])")
+)
+
+func camelToSnake(s string) string {
+	s = reUpper.ReplaceAllString(s, "${1}_${2}")
+	s = reUpperSeq.ReplaceAllString(s, "${1}_${2}")
 
 	return strings.ToLower(s)
 }

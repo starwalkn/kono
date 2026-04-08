@@ -1,28 +1,33 @@
 package kono
 
-import "net/http"
+import (
+	"net/http"
 
-// Context is the internal interface that holds the request and response objects.
-type Context interface {
-	Request() *http.Request
-	Response() *http.Response
+	"github.com/starwalkn/kono/sdk"
+)
 
-	SetRequest(req *http.Request)
-	SetResponse(resp *http.Response)
-}
+// Context is a type alias for sdk.Context — the public contract for plugin developers.
+type Context = sdk.Context
 
-type defaultContext struct {
+// konoContext is the internal per-request context passed to plugins.
+// It implements sdk.Context and is created once per request in newFlowHandler.
+type konoContext struct {
 	req  *http.Request
 	resp *http.Response
 }
 
 func newContext(req *http.Request) Context {
-	return &defaultContext{
-		req: req,
-	}
+	return &konoContext{req: req}
 }
 
-func (c *defaultContext) Request() *http.Request       { return c.req }
-func (c *defaultContext) Response() *http.Response     { return c.resp }
-func (c *defaultContext) SetRequest(r *http.Request)   { c.req = r }
-func (c *defaultContext) SetResponse(r *http.Response) { c.resp = r }
+func (c *konoContext) Request() *http.Request {
+	return c.req
+}
+
+func (c *konoContext) Response() *http.Response {
+	return c.resp
+}
+
+func (c *konoContext) SetResponse(resp *http.Response) {
+	c.resp = resp
+}

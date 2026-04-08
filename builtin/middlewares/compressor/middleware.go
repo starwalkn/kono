@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/starwalkn/kono"
 	"github.com/starwalkn/kono/internal/logger"
+	"github.com/starwalkn/kono/sdk"
 )
 
 const (
@@ -24,7 +24,7 @@ type Middleware struct {
 	log     *zap.Logger
 }
 
-func NewMiddleware() kono.Middleware {
+func NewMiddleware() sdk.Middleware {
 	return &Middleware{}
 }
 
@@ -64,6 +64,8 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Content-Encoding", m.alg)
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Del("Content-Length")
 
 		var writer io.WriteCloser
 		var err error

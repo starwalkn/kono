@@ -20,6 +20,7 @@ import (
 
 	"github.com/starwalkn/kono/internal/metric"
 	"github.com/starwalkn/kono/internal/ratelimit"
+	"github.com/starwalkn/kono/sdk"
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -142,6 +143,14 @@ func (r *Router) newFlowHandler(flow *Flow) http.Handler {
 			return
 		}
 
+		finalResp := kctx.Response() //nolint:bodyclose // closes in copyResponse
+		if finalResp.Body != nil {
+			bodyBytes, _ := io.ReadAll(finalResp.Body)
+
+			finalResp.ContentLength = int64(len(bodyBytes))
+			finalResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
 		w.Header().Set("Content-Length", strconv.Itoa(int(kctx.Response().ContentLength))) //nolint:bodyclose // closes in copyResponse
 
 		r.metrics.IncRequestsTotal(flow.Path, req.Method, kctx.Response().StatusCode) //nolint:bodyclose // closes in copyResponse
@@ -151,7 +160,7 @@ func (r *Router) newFlowHandler(flow *Flow) http.Handler {
 
 func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
 	for _, p := range flow.Plugins {
-		if p.Type() != PluginTypeRequest {
+		if p.Type() != sdk.PluginTypeRequest {
 			continue
 		}
 
@@ -173,7 +182,7 @@ func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Fl
 
 func (r *Router) runResponsePlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
 	for _, p := range flow.Plugins {
-		if p.Type() != PluginTypeResponse {
+		if p.Type() != sdk.PluginTypeResponse {
 			continue
 		}
 

@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/metric"
+	"github.com/starwalkn/kono/sdk"
 )
 
 func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
@@ -343,7 +344,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 
 	requestPlugin := &mockPlugin{
 		name: "req",
-		typ:  PluginTypeRequest,
+		typ:  sdk.PluginTypeRequest,
 		fn: func(_ Context) {
 			executed = append(executed, "req")
 		},
@@ -351,7 +352,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 
 	responsePlugin := &mockPlugin{
 		name: "resp",
-		typ:  PluginTypeResponse,
+		typ:  sdk.PluginTypeResponse,
 		fn: func(ctx Context) {
 			executed = append(executed, "resp")
 			ctx.Response().Header.Set("X-Plugin", "done")
