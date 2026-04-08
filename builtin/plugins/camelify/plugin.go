@@ -7,17 +7,17 @@ import (
 	"io"
 	"strings"
 
-	"github.com/starwalkn/kono"
+	"github.com/starwalkn/kono/sdk"
 )
 
 type Plugin struct{}
 
-func NewPlugin() kono.Plugin {
+func NewPlugin() sdk.Plugin {
 	return &Plugin{}
 }
 
-func (p *Plugin) Info() kono.PluginInfo {
-	return kono.PluginInfo{
+func (p *Plugin) Info() sdk.PluginInfo {
+	return sdk.PluginInfo{
 		Name:        "camelify",
 		Description: "The plugin can be used to transform JSON field names in the response into the camelCase style.",
 		Version:     "v1",
@@ -25,13 +25,13 @@ func (p *Plugin) Info() kono.PluginInfo {
 	}
 }
 
-func (p *Plugin) Type() kono.PluginType {
-	return kono.PluginTypeResponse
+func (p *Plugin) Type() sdk.PluginType {
+	return sdk.PluginTypeResponse
 }
 
 func (p *Plugin) Init(_ map[string]interface{}) {}
 
-func (p *Plugin) Execute(ctx kono.Context) error {
+func (p *Plugin) Execute(ctx sdk.Context) error {
 	if ctx.Response() == nil || ctx.Response().Body == nil {
 		return nil
 	}

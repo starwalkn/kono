@@ -20,6 +20,7 @@ import (
 
 	"github.com/starwalkn/kono/internal/metric"
 	"github.com/starwalkn/kono/internal/ratelimit"
+	"github.com/starwalkn/kono/sdk"
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -151,7 +152,7 @@ func (r *Router) newFlowHandler(flow *Flow) http.Handler {
 
 func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
 	for _, p := range flow.Plugins {
-		if p.Type() != PluginTypeRequest {
+		if p.Type() != sdk.PluginTypeRequest {
 			continue
 		}
 
@@ -173,7 +174,7 @@ func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Fl
 
 func (r *Router) runResponsePlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
 	for _, p := range flow.Plugins {
-		if p.Type() != PluginTypeResponse {
+		if p.Type() != sdk.PluginTypeResponse {
 			continue
 		}
 

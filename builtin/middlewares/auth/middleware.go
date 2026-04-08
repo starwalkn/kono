@@ -12,7 +12,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/starwalkn/kono"
+	"github.com/starwalkn/kono/sdk"
 )
 
 type ctxKeyClaims struct{}
@@ -32,15 +32,15 @@ type Middleware struct {
 type JWTConfig struct {
 	Alg string
 
-	HMACSecret          []byte         // For HS256.
-	RSAPublicKey        *rsa.PublicKey // For static RS256.
-	JWKSURL             string         // For JWKS.
-	JWKSRefsreshTimeout time.Duration
+	HMACSecret         []byte         // For HS256.
+	RSAPublicKey       *rsa.PublicKey // For static RS256.
+	JWKSURL            string         // For JWKS.
+	JWKSRefreshTimeout time.Duration
 }
 
 const defaultLeeway = 5 * time.Second
 
-func NewMiddleware() kono.Middleware {
+func NewMiddleware() sdk.Middleware {
 	return &Middleware{}
 }
 
@@ -61,8 +61,13 @@ func (m *Middleware) Init(config map[string]interface{}) error {
 	}
 	m.Audience = audience
 
+	alg, ok := config["alg"].(string)
+	if !ok || alg == "" {
+		return errors.New("missing or invalid alg")
+	}
+
 	jwtConfig := JWTConfig{
-		Alg: config["alg"].(string),
+		Alg: alg,
 	}
 
 	hmacSecret, err := parseHMACSecret(config, "hmac_secret")
@@ -93,13 +98,13 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "missing authorization header", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2) //nolint:mnd // it is not magic, it is a fuckin auth header parts
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			http.Error(w, "invalid authorization header", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
@@ -113,46 +118,35 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			jwt.WithLeeway(defaultLeeway),
 		)
 		if err != nil || !token.Valid {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
 		claims, ok := token.Claims.(*jwt.MapClaims)
 		if !ok {
-			http.Error(w, "invalid token claims", http.StatusUnauthorized)
-			return
-		}
-
-		expirationTime, err := claims.GetExpirationTime()
-		if err != nil {
-			http.Error(w, "invalid token expiration time", http.StatusUnauthorized)
-			return
-		}
-
-		if expirationTime.Before(time.Now()) {
-			http.Error(w, "token expired", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
 		issuer, err := claims.GetIssuer()
 		if err != nil {
-			http.Error(w, "invalid token issuer", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
 		if issuer != m.Issuer {
-			http.Error(w, "invalid token issuer", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
 		audience, err := claims.GetAudience()
 		if err != nil {
-			http.Error(w, "invalid token audience", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
 		if !slices.Contains(audience, m.Audience) {
-			http.Error(w, "invalid token audience", http.StatusUnauthorized)
+			unauthorized(w)
 			return
 		}
 
@@ -160,6 +154,12 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"errors":[{"code":"UNAUTHORIZED"}]}`))
 }
 
 func (m *Middleware) newKeyResolver(cfg JWTConfig) (keyResolver, error) {
@@ -175,10 +175,10 @@ func (m *Middleware) newKeyResolver(cfg JWTConfig) (keyResolver, error) {
 			resolver := &jwksResolver{
 				url:            cfg.JWKSURL,
 				keys:           make(map[string]*rsa.PublicKey, 0),
-				refreshTimeout: cfg.JWKSRefsreshTimeout,
+				refreshTimeout: cfg.JWKSRefreshTimeout,
 			}
 
-			if err := resolver.refresh(cfg.JWKSRefsreshTimeout); err != nil {
+			if err := resolver.refresh(cfg.JWKSRefreshTimeout); err != nil {
 				return nil, fmt.Errorf("cannot refresh JWKS: %w", err)
 			}
 
