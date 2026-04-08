@@ -143,6 +143,14 @@ func (r *Router) newFlowHandler(flow *Flow) http.Handler {
 			return
 		}
 
+		finalResp := kctx.Response()
+		if finalResp.Body != nil {
+			bodyBytes, _ := io.ReadAll(finalResp.Body)
+
+			finalResp.ContentLength = int64(len(bodyBytes))
+			finalResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
 		w.Header().Set("Content-Length", strconv.Itoa(int(kctx.Response().ContentLength))) //nolint:bodyclose // closes in copyResponse
 
 		r.metrics.IncRequestsTotal(flow.Path, req.Method, kctx.Response().StatusCode) //nolint:bodyclose // closes in copyResponse

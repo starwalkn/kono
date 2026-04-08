@@ -36,21 +36,23 @@ func (p *Plugin) Execute(ctx sdk.Context) error {
 		return nil
 	}
 
-	var data map[string]interface{}
-
 	buf := new(bytes.Buffer)
-	_, _ = buf.ReadFrom(ctx.Response().Body)
-	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
-		return fmt.Errorf("camelify: cannot unmarshal JSON: %w", err)
+	if _, err := buf.ReadFrom(ctx.Response().Body); err != nil {
+		return fmt.Errorf("camelify: cannot read body: %w", err)
 	}
 
-	newData := make(map[string]interface{})
-	for k, v := range data {
-		newKey := snakeToCamel(k)
-		newData[newKey] = v
+	if buf.Len() == 0 {
+		ctx.Response().Body = io.NopCloser(buf)
+		return nil
 	}
 
-	newBody, err := json.Marshal(newData)
+	var raw interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		ctx.Response().Body = io.NopCloser(buf)
+		return nil
+	}
+
+	newBody, err := json.Marshal(transformKeys(raw))
 	if err != nil {
 		return fmt.Errorf("camelify: cannot marshal JSON: %w", err)
 	}
@@ -58,6 +60,27 @@ func (p *Plugin) Execute(ctx sdk.Context) error {
 	ctx.Response().Body = io.NopCloser(bytes.NewReader(newBody))
 
 	return nil
+}
+
+func transformKeys(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		newMap := make(map[string]interface{}, len(val))
+		for k, child := range val {
+			newMap[snakeToCamel(k)] = transformKeys(child)
+		}
+
+		return newMap
+	case []interface{}:
+		newSlice := make([]interface{}, len(val))
+		for i, item := range val {
+			newSlice[i] = transformKeys(item)
+		}
+
+		return newSlice
+	default:
+		return val
+	}
 }
 
 func snakeToCamel(s string) string {
