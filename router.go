@@ -143,7 +143,7 @@ func (r *Router) newFlowHandler(flow *Flow) http.Handler {
 			return
 		}
 
-		finalResp := kctx.Response()
+		finalResp := kctx.Response() //nolint:bodyclose // closes in copyResponse
 		if finalResp.Body != nil {
 			bodyBytes, _ := io.ReadAll(finalResp.Body)
 
