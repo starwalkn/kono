@@ -53,7 +53,10 @@ jobs:
           cd lumos
           LUA_PATH="./?.lua;$(luarocks --lua-version=5.1 path --lr-path);;" \
           LUA_CPATH="$(luarocks --lua-version=5.1 path --lr-cpath);;" \
-          luajit -e "require('busted.runner')({ root = 'spec/' })"
+          luajit -e "
+          arg = { 'spec/', '--verbose', [0] = 'busted' }
+          require('busted.runner')()
+          "
 
   lint:
     runs-on: ubuntu-22.04
