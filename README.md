@@ -69,6 +69,7 @@ Open-source. See `LICENSE` file for details.
 <p align="center">
 Made with ❤️ in Go
 </p>
+<<<<<<< HEAD
 
 
 
@@ -86,3 +87,5 @@ Dynamic .so plugins for hooking into request/response phases
 Prometheus metrics with circuit breaker state tracking
 
 It's aimed at teams who need a BFF layer or API composition without pulling in a large gateway solution. Still early — v0.1.0, looking for feedback and contributors.
+=======
+>>>>>>> origin/master
