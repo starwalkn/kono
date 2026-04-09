@@ -41,7 +41,9 @@ func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.R
 	trustedProxies := parseTrustedProxies(cfgSet.Routing.TrustedProxies, log)
 
 	for _, fcfg := range routing.Flows {
-		flow, err := compileFlow(fcfg, trustedProxies, metrics, log)
+		var flow Flow
+
+		flow, err = compileFlow(fcfg, trustedProxies, metrics, log)
 		if err != nil {
 			log.Fatal("failed to compile flow", zap.Error(err))
 		}
@@ -119,6 +121,7 @@ func initRateLimiter(cfg RateLimiterConfig, log *zap.Logger) *ratelimit.RateLimi
 	return rl
 }
 
+//nolint:nilnil // nil pointer is allowed is lumos was not enabled
 func initLumos(cfg LumosConfig) (*lumos, error) {
 	if !cfg.Enabled {
 		return nil, nil
