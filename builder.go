@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,14 +23,20 @@ type RoutingConfigSet struct {
 	Metrics MetricsConfig
 }
 
-func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.Registry) {
+func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.Registry, error) {
 	routing := cfgSet.Routing
 
 	metrics, reg := initMetrics(cfgSet.Metrics)
 
 	router := initMinimalRouter(len(routing.Flows), metrics, log)
 	router.rateLimiter = initRateLimiter(routing.RateLimiter, log)
-	router.lumos = initLumos(cfgSet.Lumos)
+
+	lumos, err := initLumos(cfgSet.Lumos)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	router.lumos = lumos
 
 	trustedProxies := parseTrustedProxies(cfgSet.Routing.TrustedProxies, log)
 
@@ -43,7 +51,7 @@ func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.R
 
 	router.registerFlows()
 
-	return router, reg
+	return router, reg, nil
 }
 
 func (r *Router) registerFlows() {
@@ -111,15 +119,29 @@ func initRateLimiter(cfg RateLimiterConfig, log *zap.Logger) *ratelimit.RateLimi
 	return rl
 }
 
-func initLumos(cfg LumosConfig) *lumos {
-	lumosCfg := lumosConfig{
-		socketPath:          cfg.SocketPath,
-		socketReadDeadline:  cfg.ReadDeadline,
-		socketWriteDeadline: cfg.WriteDeadline,
-		msgMaxSize:          cfg.MsgMaxSize,
+func initLumos(cfg LumosConfig) (*lumos, error) {
+	if !cfg.Enabled {
+		return nil, nil
 	}
 
-	return &lumos{cfg: lumosCfg}
+	rawMaxMsg := os.Getenv("LUMOS_MAX_MSG")
+	if rawMaxMsg == "" {
+		return nil, errors.New("LUMOS_MAX_MSG environment variable is not set")
+	}
+
+	maxMsg, err := strconv.Atoi(rawMaxMsg)
+	if err != nil || maxMsg <= 0 {
+		return nil, fmt.Errorf("invalid LUMOS_MAX_MSG value: %q", rawMaxMsg)
+	}
+
+	lumosCfg := lumosConfig{
+		socketPath:          lumosSocketPath,
+		socketReadDeadline:  cfg.ReadDeadline,
+		socketWriteDeadline: cfg.WriteDeadline,
+		maxMsg:              maxMsg,
+	}
+
+	return &lumos{cfg: lumosCfg}, nil
 }
 
 func parseTrustedProxies(proxies []string, log *zap.Logger) []*net.IPNet {

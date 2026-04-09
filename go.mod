@@ -3,7 +3,6 @@ module github.com/starwalkn/kono
 go 1.25.4
 
 require (
-	github.com/VictoriaMetrics/metrics v1.42.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -18,11 +17,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require (
-	github.com/valyala/fastrand v1.1.0 // indirect
-	github.com/valyala/histogram v1.2.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
-)
+require golang.org/x/sys v0.40.0 // indirect
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

@@ -28,10 +28,8 @@ type Config struct {
 
 type LumosConfig struct {
 	Enabled       bool          `yaml:"enabled"`
-	SocketPath    string        `yaml:"socket_path"`
 	ReadDeadline  time.Duration `yaml:"read_deadline"`
 	WriteDeadline time.Duration `yaml:"write_deadline"`
-	MsgMaxSize    int           `yaml:"msg_max_size"`
 }
 
 type GatewayConfig struct {

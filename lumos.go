@@ -9,9 +9,12 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
+	lumosSocketPath     = "/tmp/lumos.sock"
 	lumosActionContinue = "continue"
 	lumosActionAbort    = "abort"
 )
@@ -24,7 +27,7 @@ type lumosConfig struct {
 	socketPath          string
 	socketReadDeadline  time.Duration
 	socketWriteDeadline time.Duration
-	msgMaxSize          int
+	maxMsg              int
 }
 
 // SendGet sends request data from the client to Lumos over a unix socket
@@ -64,13 +67,19 @@ func (l *lumos) SendGet(ctx context.Context, req *http.Request, scriptPath strin
 		ScriptPath: scriptPath,
 	}
 
+	if rctx := chi.RouteContext(req.Context()); rctx != nil {
+		for i, key := range rctx.URLParams.Keys {
+			lumosReq.Params[key] = rctx.URLParams.Values[i]
+		}
+	}
+
 	msg, err := json.Marshal(&lumosReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal lumos request: %w", err)
 	}
 
-	if len(msg) > l.cfg.msgMaxSize {
-		return nil, fmt.Errorf("request message exceeds max size: %d bytes (limit %d)", len(msg), l.cfg.msgMaxSize)
+	if len(msg) > l.cfg.maxMsg {
+		return nil, fmt.Errorf("request message exceeds max size: %d bytes (limit %d)", len(msg), l.cfg.maxMsg)
 	}
 
 	// Write length-prefixed request: [uint32 big-endian length][JSON bytes].
@@ -98,8 +107,8 @@ func (l *lumos) SendGet(ctx context.Context, req *http.Request, scriptPath strin
 
 	// Guard against a malformed or malicious response that would cause
 	// an oversized allocation
-	if int(respSize) > l.cfg.msgMaxSize {
-		return nil, fmt.Errorf("lumos response size %d exceeds max allowed %d", respSize, l.cfg.msgMaxSize)
+	if int(respSize) > l.cfg.maxMsg {
+		return nil, fmt.Errorf("lumos response size %d exceeds max allowed %d", respSize, l.cfg.maxMsg)
 	}
 
 	// Read exactly respSize bytes — no more, no less
@@ -122,14 +131,15 @@ type Script struct {
 }
 
 type LumosJSONData struct {
-	RequestID  string      `json:"request_id"`
-	Method     string      `json:"method"`
-	Path       string      `json:"path"`
-	Query      string      `json:"query"`
-	Headers    http.Header `json:"headers"`
-	Body       []byte      `json:"body"`
-	ClientIP   string      `json:"client_ip"`
-	ScriptPath string      `json:"script_path"`
+	RequestID  string            `json:"request_id"`
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	Query      string            `json:"query"`
+	Headers    http.Header       `json:"headers"`
+	Params     map[string]string `json:"params"`
+	Body       []byte            `json:"body"`
+	ClientIP   string            `json:"client_ip"`
+	ScriptPath string            `json:"script_path"`
 }
 
 type LumosJSONResponse struct {

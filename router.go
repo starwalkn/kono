@@ -205,7 +205,20 @@ func (r *Router) runResponsePlugins(w http.ResponseWriter, kctx Context, flow *F
 func (r *Router) runLuaScripts(w http.ResponseWriter, req *http.Request, flow *Flow, log *zap.Logger) (*http.Request, bool) {
 	for _, script := range flow.Scripts {
 		if script.Source != sourceFile {
+			log.Warn("lua script configured but source is not 'file'",
+				zap.String("source", script.Source),
+				zap.String("script", script.Path),
+			)
+
 			continue
+		}
+
+		// If Lumos was not enabled in configuration
+		if r.lumos == nil {
+			log.Error("lua script configured but lumos is disabled", zap.String("script", script.Path))
+			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
+
+			return nil, false
 		}
 
 		lumosResp, err := r.lumos.SendGet(req.Context(), req, script.Path)
@@ -230,6 +243,7 @@ func (r *Router) runLuaScripts(w http.ResponseWriter, req *http.Request, flow *F
 		default:
 			log.Error("unknown action from lumos",
 				zap.String("action", lumosResp.Action),
+				zap.String("script", script.Path),
 			)
 			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
 

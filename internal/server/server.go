@@ -16,13 +16,16 @@ type Server struct {
 	log  *zap.Logger
 }
 
-func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
+func New(cfg kono.GatewayConfig, log *zap.Logger) (*Server, error) {
 	routingConfigSet := kono.RoutingConfigSet{
 		Routing: cfg.Routing,
 		Metrics: cfg.Server.Metrics,
 	}
 
-	mainRouter, promReg := kono.NewRouter(routingConfigSet, log.Named("router"))
+	mainRouter, promReg, err := kono.NewRouter(routingConfigSet, log.Named("router"))
+	if err != nil {
+		return nil, err
+	}
 
 	mux := http.NewServeMux()
 
@@ -47,7 +50,7 @@ func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
 			ReadTimeout:  cfg.Server.Timeout,
 			WriteTimeout: cfg.Server.Timeout,
 		},
-	}
+	}, nil
 }
 
 func (s *Server) Start() error {
