@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono"
@@ -16,13 +17,16 @@ type Server struct {
 	log  *zap.Logger
 }
 
-func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
+func New(cfg kono.GatewayConfig, log *zap.Logger) (*Server, *sdkmetric.MeterProvider, error) {
 	routingConfigSet := kono.RoutingConfigSet{
 		Routing: cfg.Routing,
 		Metrics: cfg.Server.Metrics,
 	}
 
-	mainRouter, promReg := kono.NewRouter(routingConfigSet, log.Named("router"))
+	mainRouter, meterProvider, promReg, err := kono.NewRouter(routingConfigSet, log.Named("router"))
+	if err != nil {
+		return nil, nil, err
+	}
 
 	mux := http.NewServeMux()
 
@@ -47,7 +51,7 @@ func New(cfg kono.GatewayConfig, log *zap.Logger) *Server {
 			ReadTimeout:  cfg.Server.Timeout,
 			WriteTimeout: cfg.Server.Timeout,
 		},
-	}
+	}, meterProvider, nil
 }
 
 func (s *Server) Start() error {

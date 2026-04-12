@@ -1,26 +1,18 @@
 function handle(request)
-    local cjson = require('cjson')
+    local user_id = request.params.user_id
 
-    local function replace_key(tbl, target_key, new_value)
-        for k, v in pairs(tbl) do
-            if k == target_key then
-                tbl[k] = new_value
-            elseif type(v) == "table" then
-                replace_key(v, target_key, new_value)
-            end
+    if request.method == "POST" and request.body then
+        local body = cjson.decode(request.body)
+        if not body.name then
+            request.action = "abort"
+            request.http_status = 400
+            return request
         end
     end
 
-    if request.body then
-        local body_table = cjson.decode(request.body)
-
-        replace_key(body_table, "user_id", 123)
-
-        request.body = cjson.encode(body_table)
-    end
-
-    request.headers["X-Lua-Example"] = "1"
+    -- Добавляем заголовок на основе параметра
+    request.headers["X-User-Id"] = user_id
     request.action = "continue"
-    
+
     return request
 end

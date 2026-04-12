@@ -7,34 +7,69 @@ on:
     branches: [ "master" ]
 
 env:
-  GO_VERSION: 1.25.4
-  GOLANGCI_LINT_VERSION: v2.7.2
+  GO_VERSION: "1.25.4"
+  GOLANGCI_LINT_VERSION: "v2.7.2"
 
 jobs:
-  checks:
-    name: Test, Lint, Coverage
+  test-go:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Test
+      - name: Run tests
         run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v8.0.0
-        with:
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
-
-      - name: Codecov
-        uses: codecov/codecov-action@v6.0.0
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.txt
+
+  test-lua:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LuaJIT and luarocks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit luarocks build-essential
+
+      - name: Install Lua dependencies
+        run: |
+          sudo luarocks --lua-version=5.1 install lua-cjson
+          sudo luarocks --lua-version=5.1 install busted
+
+      - name: Run Lumos tests
+        run: |
+          cd lumos
+          LUA_PATH="./?.lua;$(luarocks --lua-version=5.1 path --lr-path);;" \
+          LUA_CPATH="$(luarocks --lua-version=5.1 path --lr-cpath);;" \
+          luajit -e "
+          arg = { 'spec/', '--verbose', [0] = 'busted' }
+          require('busted.runner')()
+          "
+
+  lint:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}

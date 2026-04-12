@@ -41,32 +41,14 @@ function M.load(path)
 end
 
 function M.run(func, request)
-    local instruction_limit = 100000
-
-    local co = coroutine.create(func)
-
-    local function hook()
-        instruction_limit = instruction_limit - 1
-        if instruction_limit <= 0 then
-            error("script timeout")
-        end
-    end
-
-    debug.sethook(co, hook, "", 1000)
-
-    local ok, res = coroutine.resume(co, request)
-
-    debug.sethook(co)
-
+    local ok, res = pcall(func, request)
     if not ok then
         return false, res
     end
 
-    if type(res) ~= "table" then
-        return false, "invalid response"
+    if type(res) ~= "table" or not res.action then
+        return false, "invalid script response"
     end
-
-    res.action = res.action or "continue"
 
     return true, res
 end

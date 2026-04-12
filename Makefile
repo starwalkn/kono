@@ -3,7 +3,7 @@ GOARCH ?= amd64
 PLUGIN_OUT=build/plugins
 MIDDLEWARE_OUT=build/middlewares
 
-.PHONY: all build plugins clean lint test
+.PHONY: all build plugins clean lint test test-lumos
 
 all: clean build plugins
 
@@ -31,3 +31,6 @@ lint:
 
 test:
 	go test -v -coverprofile=coverage.out ./...
+
+test-lumos:
+	cd lumos && busted spec/

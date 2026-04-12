@@ -50,7 +50,10 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(cfg.Gateway, log)
+	srv, meterProvider, err := server.New(cfg.Gateway, log)
+	if err != nil {
+		return err
+	}
 
 	go func() {
 		if err = srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -70,6 +73,10 @@ func runServe() error {
 
 	if err = srv.Stop(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", zap.Error(err))
+	}
+
+	if err = meterProvider.Shutdown(shutdownCtx); err != nil {
+		log.Error("metrics shutdown failed", zap.Error(err))
 	}
 
 	stopPprof(shutdownCtx)

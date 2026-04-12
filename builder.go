@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
@@ -21,19 +24,27 @@ type RoutingConfigSet struct {
 	Metrics MetricsConfig
 }
 
-func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.Registry) {
+func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *sdkmetric.MeterProvider, *prometheus.Registry, error) {
 	routing := cfgSet.Routing
 
-	metrics, reg := initMetrics(cfgSet.Metrics)
+	metrics, provider, reg := initMetrics(cfgSet.Metrics, log)
 
 	router := initMinimalRouter(len(routing.Flows), metrics, log)
 	router.rateLimiter = initRateLimiter(routing.RateLimiter, log)
-	router.lumos = initLumos(cfgSet.Lumos)
+
+	lumos, err := initLumos(cfgSet.Lumos)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	router.lumos = lumos
 
 	trustedProxies := parseTrustedProxies(cfgSet.Routing.TrustedProxies, log)
 
 	for _, fcfg := range routing.Flows {
-		flow, err := compileFlow(fcfg, trustedProxies, metrics, log)
+		var flow Flow
+
+		flow, err = compileFlow(fcfg, trustedProxies, metrics, log)
 		if err != nil {
 			log.Fatal("failed to compile flow", zap.Error(err))
 		}
@@ -43,7 +54,7 @@ func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.R
 
 	router.registerFlows()
 
-	return router, reg
+	return router, provider, reg, nil
 }
 
 func (r *Router) registerFlows() {
@@ -85,16 +96,29 @@ func initMinimalRouter(routesCount int, metrics metric.Metrics, log *zap.Logger)
 	}
 }
 
-func initMetrics(cfg MetricsConfig) (metric.Metrics, *prometheus.Registry) {
+func initMetrics(cfg MetricsConfig, log *zap.Logger) (metric.Metrics, *sdkmetric.MeterProvider, *prometheus.Registry) {
 	if !cfg.Enabled {
-		return metric.NewNop(), nil
+		return metric.NewNop(), nil, nil
 	}
 
-	switch cfg.Provider {
+	switch cfg.Exporter {
 	case "prometheus":
-		return metric.NewPrometheus()
+		m, reg, err := metric.NewOtelPrometheus()
+		if err != nil {
+			log.Fatal("failed to init prometheus metrics", zap.Error(err))
+		}
+
+		return m, nil, reg
+	case "otlp":
+		m, provider, err := metric.NewOtelOTLP(cfg.OTLP.Endpoint, cfg.OTLP.Insecure, cfg.OTLP.Interval)
+		if err != nil {
+			log.Fatal("failed to init otlp metrics", zap.Error(err))
+		}
+
+		return m, provider, nil
 	default:
-		return metric.NewNop(), nil
+		log.Fatal("unknown metrics exporter", zap.String("exporter", cfg.Exporter))
+		return metric.NewNop(), nil, nil
 	}
 }
 
@@ -111,15 +135,30 @@ func initRateLimiter(cfg RateLimiterConfig, log *zap.Logger) *ratelimit.RateLimi
 	return rl
 }
 
-func initLumos(cfg LumosConfig) *lumos {
-	lumosCfg := lumosConfig{
-		socketPath:          cfg.SocketPath,
-		socketReadDeadline:  cfg.ReadDeadline,
-		socketWriteDeadline: cfg.WriteDeadline,
-		msgMaxSize:          cfg.MsgMaxSize,
+//nolint:nilnil // nil pointer is allowed is lumos was not enabled
+func initLumos(cfg LumosConfig) (*lumos, error) {
+	if !cfg.Enabled {
+		return nil, nil
 	}
 
-	return &lumos{cfg: lumosCfg}
+	rawMaxMsg := os.Getenv("LUMOS_MAX_MSG")
+	if rawMaxMsg == "" {
+		return nil, errors.New("LUMOS_MAX_MSG environment variable is not set")
+	}
+
+	maxMsg, err := strconv.Atoi(rawMaxMsg)
+	if err != nil || maxMsg <= 0 {
+		return nil, fmt.Errorf("invalid LUMOS_MAX_MSG value: %q", rawMaxMsg)
+	}
+
+	lumosCfg := lumosConfig{
+		socketPath:          lumosSocketPath,
+		socketReadDeadline:  cfg.ReadDeadline,
+		socketWriteDeadline: cfg.WriteDeadline,
+		maxMsg:              maxMsg,
+	}
+
+	return &lumos{cfg: lumosCfg}, nil
 }
 
 func parseTrustedProxies(proxies []string, log *zap.Logger) []*net.IPNet {

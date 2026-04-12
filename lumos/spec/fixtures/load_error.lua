@@ -1,0 +1,1 @@
+error("this script fails on load")

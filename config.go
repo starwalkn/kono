@@ -28,10 +28,8 @@ type Config struct {
 
 type LumosConfig struct {
 	Enabled       bool          `yaml:"enabled"`
-	SocketPath    string        `yaml:"socket_path"`
 	ReadDeadline  time.Duration `yaml:"read_deadline"`
 	WriteDeadline time.Duration `yaml:"write_deadline"`
-	MsgMaxSize    int           `yaml:"msg_max_size"`
 }
 
 type GatewayConfig struct {
@@ -53,15 +51,14 @@ type PprofConfig struct {
 
 type MetricsConfig struct {
 	Enabled  bool   `yaml:"enabled"`
-	Provider string `yaml:"provider"`
+	Exporter string `yaml:"exporter"`
 
-	VictoriaMetrics VictoriaMetricsConfig `yaml:"victoria_metrics"`
+	OTLP OTLPConfig `yaml:"otlp"`
 }
 
-type VictoriaMetricsConfig struct {
-	Host     string        `yaml:"host"`
-	Port     int           `yaml:"port"`
-	Path     string        `yaml:"path"`
+type OTLPConfig struct {
+	Endpoint string        `yaml:"endpoint"`
+	Insecure bool          `yaml:"insecure"`
 	Interval time.Duration `yaml:"interval"`
 }
 
