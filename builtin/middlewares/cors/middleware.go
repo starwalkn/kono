@@ -31,7 +31,7 @@ func (m *Middleware) Init(cfg map[string]interface{}) error {
 
 	if origins, ok := cfg["allowed_origins"].([]interface{}); ok {
 		for _, o := range origins {
-			if s, ok := o.(string); ok {
+			if s, ook := o.(string); ook {
 				if s == "*" {
 					m.allowAll = true
 				}
@@ -43,7 +43,7 @@ func (m *Middleware) Init(cfg map[string]interface{}) error {
 
 	if methods, ok := cfg["allowed_methods"].([]interface{}); ok {
 		for _, method := range methods {
-			if s, ok := method.(string); ok {
+			if s, mok := method.(string); mok {
 				m.allowedMethods = append(m.allowedMethods, strings.ToUpper(s))
 			}
 		}
@@ -51,7 +51,7 @@ func (m *Middleware) Init(cfg map[string]interface{}) error {
 
 	if headers, ok := cfg["allowed_headers"].([]interface{}); ok {
 		for _, h := range headers {
-			if s, ok := h.(string); ok {
+			if s, hok := h.(string); hok {
 				m.allowedHeaders = append(m.allowedHeaders, s)
 			}
 		}

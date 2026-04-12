@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
@@ -23,17 +24,17 @@ type RoutingConfigSet struct {
 	Metrics MetricsConfig
 }
 
-func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.Registry, error) {
+func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *sdkmetric.MeterProvider, *prometheus.Registry, error) {
 	routing := cfgSet.Routing
 
-	metrics, reg := initMetrics(cfgSet.Metrics)
+	metrics, provider, reg := initMetrics(cfgSet.Metrics, log)
 
 	router := initMinimalRouter(len(routing.Flows), metrics, log)
 	router.rateLimiter = initRateLimiter(routing.RateLimiter, log)
 
 	lumos, err := initLumos(cfgSet.Lumos)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	router.lumos = lumos
@@ -53,7 +54,7 @@ func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *prometheus.R
 
 	router.registerFlows()
 
-	return router, reg, nil
+	return router, provider, reg, nil
 }
 
 func (r *Router) registerFlows() {
@@ -95,16 +96,29 @@ func initMinimalRouter(routesCount int, metrics metric.Metrics, log *zap.Logger)
 	}
 }
 
-func initMetrics(cfg MetricsConfig) (metric.Metrics, *prometheus.Registry) {
+func initMetrics(cfg MetricsConfig, log *zap.Logger) (metric.Metrics, *sdkmetric.MeterProvider, *prometheus.Registry) {
 	if !cfg.Enabled {
-		return metric.NewNop(), nil
+		return metric.NewNop(), nil, nil
 	}
 
-	switch cfg.Provider {
+	switch cfg.Exporter {
 	case "prometheus":
-		return metric.NewPrometheus()
+		m, reg, err := metric.NewOtelPrometheus()
+		if err != nil {
+			log.Fatal("failed to init prometheus metrics", zap.Error(err))
+		}
+
+		return m, nil, reg
+	case "otlp":
+		m, provider, err := metric.NewOtelOTLP(cfg.OTLP.Endpoint, cfg.OTLP.Insecure, cfg.OTLP.Interval)
+		if err != nil {
+			log.Fatal("failed to init otlp metrics", zap.Error(err))
+		}
+
+		return m, provider, nil
 	default:
-		return metric.NewNop(), nil
+		log.Fatal("unknown metrics exporter", zap.String("exporter", cfg.Exporter))
+		return metric.NewNop(), nil, nil
 	}
 }
 

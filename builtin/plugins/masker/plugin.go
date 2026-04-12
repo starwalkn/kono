@@ -41,7 +41,7 @@ func (p *Plugin) Init(cfg map[string]interface{}) {
 	}
 
 	for _, v := range raw {
-		if field, ok := v.(string); ok {
+		if field, vok := v.(string); vok {
 			p.fields[field] = struct{}{}
 		}
 	}
@@ -69,7 +69,7 @@ func (p *Plugin) Execute(ctx sdk.Context) error {
 	var raw interface{}
 	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
 		ctx.Response().Body = io.NopCloser(buf)
-		return nil
+		return nil //nolint:nilerr // it is ok for plugins
 	}
 
 	masked := p.maskKeys(raw)
