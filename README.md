@@ -14,6 +14,8 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 [![codecov](https://codecov.io/gh/starwalkn/kono/branch/master/graph/badge.svg)](https://codecov.io/gh/starwalkn/kono)
 ![Docker Pulls](https://img.shields.io/docker/pulls/starwalkn/kono)
 ![GitHub Created At](https://img.shields.io/github/created-at/starwalkn/kono)
+[![GitHub release](https://img.shields.io/github/v/release/starwalkn/kono)](https://github.com/starwalkn/kono/releases)
+[![GitHub stars](https://img.shields.io/github/stars/starwalkn/kono)](https://github.com/starwalkn/kono/stargazers)
 
 ---
 
