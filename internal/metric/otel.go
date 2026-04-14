@@ -13,6 +13,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
+const defaultMetricsInterval = 60 * time.Second
+
 type otelMetrics struct {
 	requestsTotal         otelmetric.Int64Counter
 	requestsDuration      otelmetric.Float64Histogram
@@ -23,6 +25,50 @@ type otelMetrics struct {
 	upstreamErrorsTotal   otelmetric.Int64Counter
 	upstreamRetriesTotal  otelmetric.Int64Counter
 	circuitBreakerState   otelmetric.Float64Gauge
+}
+
+func NewOtelPrometheus() (Metrics, *prometheus.Registry, error) {
+	reg := prometheus.NewRegistry()
+
+	exporter, err := otelprometheus.New(otelprometheus.WithRegisterer(reg))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	provider := newMeterProvider(exporter)
+	otel.SetMeterProvider(provider)
+
+	m, err := newInstruments(provider)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return m, reg, nil
+}
+
+func NewOtelOTLP(endpoint string, insecure bool, interval time.Duration) (Metrics, *sdkmetric.MeterProvider, error) {
+	opts := []otlpmetrichttp.Option{
+		otlpmetrichttp.WithEndpoint(endpoint),
+	}
+	if insecure {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	}
+
+	exporter, err := otlpmetrichttp.New(context.Background(), opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if interval == 0 {
+		interval = defaultMetricsInterval
+	}
+
+	reader := sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(interval))
+	provider := newMeterProvider(reader)
+	otel.SetMeterProvider(provider)
+
+	m, err := newInstruments(provider)
+	return m, provider, err
 }
 
 func newMeterProvider(reader sdkmetric.Reader) *sdkmetric.MeterProvider {
@@ -130,50 +176,6 @@ func newInstruments(provider *sdkmetric.MeterProvider) (*otelMetrics, error) {
 	}
 
 	return m, nil
-}
-
-func NewOtelPrometheus() (Metrics, *prometheus.Registry, error) {
-	reg := prometheus.NewRegistry()
-
-	exporter, err := otelprometheus.New(otelprometheus.WithRegisterer(reg))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	provider := newMeterProvider(exporter)
-	otel.SetMeterProvider(provider)
-
-	m, err := newInstruments(provider)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return m, reg, nil
-}
-
-func NewOtelOTLP(endpoint string, insecure bool, interval time.Duration) (Metrics, *sdkmetric.MeterProvider, error) {
-	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpoint(endpoint),
-	}
-	if insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	}
-
-	exporter, err := otlpmetrichttp.New(context.Background(), opts...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if interval == 0 {
-		interval = 60 * time.Second
-	}
-
-	reader := sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(interval))
-	provider := newMeterProvider(reader)
-	otel.SetMeterProvider(provider)
-
-	m, err := newInstruments(provider)
-	return m, provider, err
 }
 
 func (m *otelMetrics) IncRequestsTotal(route, method string, status int) {

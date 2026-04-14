@@ -6,9 +6,6 @@ import (
 	"github.com/starwalkn/kono/sdk"
 )
 
-// Context is a type alias for sdk.Context — the public contract for plugin developers.
-type Context = sdk.Context
-
 // konoContext is the internal per-request context passed to plugins.
 // It implements sdk.Context and is created once per request in newFlowHandler.
 type konoContext struct {
@@ -16,7 +13,7 @@ type konoContext struct {
 	resp *http.Response
 }
 
-func newContext(req *http.Request) Context {
+func newContext(req *http.Request) sdk.Context {
 	return &konoContext{req: req}
 }
 

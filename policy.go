@@ -2,38 +2,30 @@ package kono
 
 import "time"
 
-// Policy defines the per-upstream configuration for handling HTTP responses, retries, and fault tolerance.
-// Each upstream can have its own Policy instance.
-type Policy struct {
+// upstreamPolicy defines the per-upstream configuration for handling HTTP responses, retries, and fault tolerance.
+// Each upstream can have its own upstreamPolicy instance.
+type upstreamPolicy struct {
 	// Response validation
-	HeaderBlacklist     map[string]struct{}
-	AllowedStatuses     []int
-	RequireBody         bool
-	MaxResponseBodySize int64
+	headerBlacklist     map[string]struct{}
+	allowedStatuses     []int
+	requireBody         bool
+	maxResponseBodySize int64
 
 	// On-failure behaviour
-	Retry RetryPolicy
+	retry retryPolicy
 }
 
-// RetryPolicy specifies retry behavior for an upstream, including max retries, which statuses trigger retries,
+// retryPolicy specifies retry behavior for an upstream, including max retries, which statuses trigger retries,
 // and backoff delay between attempts.
-type RetryPolicy struct {
-	MaxRetries      int
-	RetryOnStatuses []int
-	BackoffDelay    time.Duration
+type retryPolicy struct {
+	maxRetries      int
+	retryOnStatuses []int
+	backoffDelay    time.Duration
 }
 
-// CircuitBreakerPolicy configures a per-upstream circuit breaker, including maximum consecutive failures,
-// and the reset timeout after which the breaker will allow attempts again.
-type CircuitBreakerPolicy struct {
-	Enabled      bool
-	MaxFailures  int
-	ResetTimeout time.Duration
-}
-
-type LBMode string
+type lbMode string
 
 const (
-	lbModeRoundRobin LBMode = "round_robin"
-	lbModeLeastConns LBMode = "least_conns"
+	lbModeRoundRobin lbMode = "round_robin"
+	lbModeLeastConns lbMode = "least_conns"
 )

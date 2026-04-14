@@ -32,7 +32,7 @@ func New(cfg kono.GatewayConfig, log *zap.Logger) (*Server, *sdkmetric.MeterProv
 
 	mux.Handle("GET /__health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK")) //nolint:errcheck,gosec // not important
+		_, _ = w.Write([]byte("OK"))
 	}))
 
 	if cfg.Server.Metrics.Enabled && promReg != nil {

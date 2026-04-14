@@ -29,31 +29,31 @@ func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
 	return resp
 }
 
-type mockDispatcher struct {
-	results []UpstreamResponse
+type mockScatter struct {
+	results []upstreamResponse
 }
 
-func (m *mockDispatcher) dispatch(_ *Flow, _ *http.Request) []UpstreamResponse {
+func (m *mockScatter) scatter(_ *flow, _ *http.Request) []upstreamResponse {
 	return m.results
 }
 
 type mockPlugin struct {
 	name string
-	typ  PluginType
-	fn   func(Context)
+	typ  sdk.PluginType
+	fn   func(sdk.Context)
 }
 
 func (m *mockPlugin) Init(_ map[string]interface{}) {}
-func (m *mockPlugin) Info() PluginInfo {
-	return PluginInfo{
+func (m *mockPlugin) Info() sdk.PluginInfo {
+	return sdk.PluginInfo{
 		Name:        m.name,
 		Description: "Mock plugin",
 		Version:     "v1",
 		Author:      "test",
 	}
 }
-func (m *mockPlugin) Type() PluginType { return m.typ }
-func (m *mockPlugin) Execute(ctx Context) error {
+func (m *mockPlugin) Type() sdk.PluginType { return m.typ }
+func (m *mockPlugin) Execute(ctx sdk.Context) error {
 	m.fn(ctx)
 
 	return nil
@@ -70,12 +70,12 @@ func (m *mockMiddleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func newTestRouter(flows []Flow, d dispatcher, a aggregator) *Router {
+func newTestRouter(flows []flow, d scatter, a aggregator) *Router {
 	r := &Router{
 		chiRouter:  chi.NewMux(),
-		dispatcher: d,
+		scatter:    d,
 		aggregator: a,
-		Flows:      flows,
+		flows:      flows,
 		log:        zap.NewNop(),
 		metrics:    metric.NewNop(),
 	}
@@ -86,20 +86,20 @@ func newTestRouter(flows []Flow, d dispatcher, a aggregator) *Router {
 }
 
 func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
-	d := &mockDispatcher{
-		results: []UpstreamResponse{
-			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-			{Status: http.StatusOK, Body: []byte(`"B"`), Err: nil},
+	d := &mockScatter{
+		results: []upstreamResponse{
+			{status: http.StatusOK, body: []byte(`"A"`), err: nil},
+			{status: http.StatusOK, body: []byte(`"B"`), err: nil},
 		},
 	}
 
-	flows := []Flow{
+	flows := []flow{
 		{
-			Path:   "/test/basic/flow",
-			Method: http.MethodGet,
-			Aggregation: Aggregation{
-				Strategy:   strategyArray,
-				BestEffort: false,
+			path:   "/test/basic/flow",
+			method: http.MethodGet,
+			aggregation: aggregation{
+				strategy:   strategyArray,
+				bestEffort: false,
 			},
 		},
 	}
@@ -141,23 +141,23 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
-	d := &mockDispatcher{
-		results: []UpstreamResponse{
-			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-			{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-				Kind: UpstreamTimeout,
-				Err:  errors.New("upstream timeout"),
+	d := &mockScatter{
+		results: []upstreamResponse{
+			{status: http.StatusOK, body: []byte(`"A"`), err: nil},
+			{status: http.StatusInternalServerError, body: nil, err: &upstreamError{
+				kind: upstreamTimeout,
+				err:  errors.New("upstream timeout"),
 			}},
 		},
 	}
 
-	flows := []Flow{
+	flows := []flow{
 		{
-			Path:   "/test/partial/response",
-			Method: http.MethodGet,
-			Aggregation: Aggregation{
-				Strategy:   strategyArray,
-				BestEffort: true,
+			path:   "/test/partial/response",
+			method: http.MethodGet,
+			aggregation: aggregation{
+				strategy:   strategyArray,
+				bestEffort: true,
 			},
 		},
 	}
@@ -203,23 +203,23 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
-	d := &mockDispatcher{
-		results: []UpstreamResponse{
-			{Status: http.StatusOK, Body: []byte(`"A"`), Err: nil},
-			{Status: http.StatusInternalServerError, Body: nil, Err: &UpstreamError{
-				Kind: UpstreamTimeout,
-				Err:  errors.New("upstream timeout"),
+	d := &mockScatter{
+		results: []upstreamResponse{
+			{status: http.StatusOK, body: []byte(`"A"`), err: nil},
+			{status: http.StatusInternalServerError, body: nil, err: &upstreamError{
+				kind: upstreamTimeout,
+				err:  errors.New("upstream timeout"),
 			}},
 		},
 	}
 
-	flows := []Flow{
+	flows := []flow{
 		{
-			Path:   "/test/upstream/error",
-			Method: http.MethodGet,
-			Aggregation: Aggregation{
-				Strategy:   strategyArray,
-				BestEffort: false,
+			path:   "/test/upstream/error",
+			method: http.MethodGet,
+			aggregation: aggregation{
+				strategy:   strategyArray,
+				bestEffort: false,
 			},
 		},
 	}
@@ -260,34 +260,34 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
-	d := &mockDispatcher{
-		results: []UpstreamResponse{
+	d := &mockScatter{
+		results: []upstreamResponse{
 			{
-				Status: http.StatusInternalServerError,
-				Body:   nil,
-				Err: &UpstreamError{
-					Kind: "unknown_error_kind", // will be mapped to InternalError
-					Err:  errors.New("upstream unknown_error_kind"),
+				status: http.StatusInternalServerError,
+				body:   nil,
+				err: &upstreamError{
+					kind: "unknown_error_kind", // will be mapped to InternalError
+					err:  errors.New("upstream unknown_error_kind"),
 				},
 			},
 			{
-				Status: http.StatusInternalServerError,
-				Body:   nil,
-				Err: &UpstreamError{
-					Kind: UpstreamTimeout,
-					Err:  errors.New("upstream timeout"),
+				status: http.StatusInternalServerError,
+				body:   nil,
+				err: &upstreamError{
+					kind: upstreamTimeout,
+					err:  errors.New("upstream timeout"),
 				},
 			},
 		},
 	}
 
-	flows := []Flow{
+	flows := []flow{
 		{
-			Path:   "/test/upstream/error/priority",
-			Method: http.MethodGet,
-			Aggregation: Aggregation{
-				Strategy:   strategyArray,
-				BestEffort: true,
+			path:   "/test/upstream/error/priority",
+			method: http.MethodGet,
+			aggregation: aggregation{
+				strategy:   strategyArray,
+				bestEffort: true,
 			},
 		},
 	}
@@ -345,7 +345,7 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 	requestPlugin := &mockPlugin{
 		name: "req",
 		typ:  sdk.PluginTypeRequest,
-		fn: func(_ Context) {
+		fn: func(_ sdk.Context) {
 			executed = append(executed, "req")
 		},
 	}
@@ -353,26 +353,26 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 	responsePlugin := &mockPlugin{
 		name: "resp",
 		typ:  sdk.PluginTypeResponse,
-		fn: func(ctx Context) {
+		fn: func(ctx sdk.Context) {
 			executed = append(executed, "resp")
 			ctx.Response().Header.Set("X-Plugin", "done")
 		},
 	}
 
-	d := &mockDispatcher{
-		results: []UpstreamResponse{
-			{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
+	d := &mockScatter{
+		results: []upstreamResponse{
+			{status: http.StatusOK, body: []byte(`"OK"`), err: nil},
 		},
 	}
 
-	flows := []Flow{
+	flows := []flow{
 		{
-			Path:    "/test/with/plugins",
-			Method:  http.MethodGet,
-			Plugins: []Plugin{requestPlugin, responsePlugin},
-			Aggregation: Aggregation{
-				Strategy:   strategyArray,
-				BestEffort: false,
+			path:    "/test/with/plugins",
+			method:  http.MethodGet,
+			plugins: []sdk.Plugin{requestPlugin, responsePlugin},
+			aggregation: aggregation{
+				strategy:   strategyArray,
+				bestEffort: false,
 			},
 		},
 	}
@@ -417,17 +417,17 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 }
 
 func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
-	d := &mockDispatcher{
-		results: []UpstreamResponse{
-			{Status: http.StatusOK, Body: []byte(`"OK"`), Err: nil},
+	d := &mockScatter{
+		results: []upstreamResponse{
+			{status: http.StatusOK, body: []byte(`"OK"`), err: nil},
 		},
 	}
 
-	flows := []Flow{
+	flows := []flow{
 		{
-			Path:        "/test/with/middleware",
-			Method:      http.MethodGet,
-			Middlewares: []Middleware{&mockMiddleware{}},
+			path:        "/test/with/middleware",
+			method:      http.MethodGet,
+			middlewares: []sdk.Middleware{&mockMiddleware{}},
 		},
 	}
 

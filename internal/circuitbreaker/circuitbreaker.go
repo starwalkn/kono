@@ -56,9 +56,11 @@ func (b *CircuitBreaker) Allow() bool {
 		}
 
 		return false
-	default:
+	case Closed:
 		return true
 	}
+
+	return true
 }
 
 func (b *CircuitBreaker) OnFailure() {
@@ -77,6 +79,8 @@ func (b *CircuitBreaker) OnFailure() {
 		if b.failures >= b.threshold {
 			b.state = Open
 		}
+	case Open:
+		// Already open — lastFailureAt is updated above, nothing else to do.
 	}
 }
 
@@ -90,6 +94,8 @@ func (b *CircuitBreaker) OnSuccess() {
 		b.failures = 0
 	case Closed:
 		b.failures = 0
+	case Open:
+		// Success while open shouldn't happen — Allow() returns false for Open state.
 	}
 }
 

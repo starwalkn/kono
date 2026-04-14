@@ -24,54 +24,42 @@ import (
 )
 
 var hopByHopHeaders = map[string]struct{}{
-	"Content-Length":    {},
-	"Transfer-Encoding": {},
-	"Connection":        {},
-	"Trailer":           {},
-	"Date":              {},
-	"Server":            {},
+	"Content-Length":      {},
+	"Transfer-Encoding":   {},
+	"Connection":          {},
+	"Trailer":             {},
+	"Date":                {},
+	"Server":              {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"TE":                  {},
+	"Upgrade":             {},
 }
 
 type Router struct {
-	chiRouter *chi.Mux
+	chiRouter  *chi.Mux
+	scatter    scatter
+	aggregator aggregator
+	flows      []flow
 
-	lumos          *lumos
-	dispatcher     dispatcher
-	aggregator     aggregator
-	Flows          []Flow
-	TrustedProxies []string
-
-	log     *zap.Logger
-	metrics metric.Metrics
-
+	log         *zap.Logger
+	metrics     metric.Metrics
 	rateLimiter *ratelimit.RateLimit
 }
 
-// ServeHTTP handles incoming HTTP requests through the full router pipeline.
+// ServeHTTP handles incoming HTTP requests through the full router pipeline:
+//  1. Rate limiting — rejects requests exceeding the configured limit.
+//  2. Flow matching — chi router finds the flow by method and path (404 if none).
+//  3. Middleware execution — per-flow middlewares wrap the handler.
+//  4. Request plugins — run before upstream scatter; may modify the request.
+//  5. Upstream scatter — fan-out to all configured upstreams.
+//  6. Response aggregation — merge/array/namespace strategies with bestEffort support.
+//  7. Response plugins — run after aggregation; may modify headers or body.
+//  8. Response writing — status, headers, and JSON body sent to the client.
 //
-// The processing steps are:
-//
-// 1. Rate limiting (if enabled) – rejects requests exceeding allowed limits.
-// 2. Flow matching – finds a Flow that matches the request method and path.
-//   - If no route is found, responds with 404.
-//
-// 3. Middleware execution – wraps the route handler with all configured middlewares in reverse order.
-// 4. Request-phase plugins – executed before upstream dispatch. Can modify the request context.
-// 5. Upstream dispatch – sends the request to all configured upstreams via the dispatcher.
-//   - If the dispatch fails (e.g., body too large), responds with an appropriate error.
-//     6. Response aggregation – combines multiple upstream responses according to the route's aggregation strategy
-//     ("merge" or "array") and the allowPartialResults flag.
-//     7. Response-phase plugins – executed after aggregation, can modify headers or the response body.
-//     8. Response writing – writes the aggregated response, appropriate HTTP status code, and headers
-//     to the client.
-//
-// Status code determination:
-//
-// - 200 OK: all upstreams succeeded, no errors.
-// - 206 Partial Content: allowPartialResults=true, at least one upstream failed.
-// - 500 Internal Server Error: allowPartialResults=false, at least one upstream failed.
-//
-// The final response always includes a JSON body with `data` and `errors` fields, and a `X-Request-ID` header.
+// Status codes: 200 on full success, 206 on partial (bestEffort), 502/500 on failure.
+// Every response carries an X-Request-ID header and a JSON body with data/errors fields.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
@@ -101,29 +89,29 @@ func (r *Router) allowRequest(w http.ResponseWriter, clientIP string) bool {
 	return false
 }
 
-func (r *Router) newFlowHandler(flow *Flow) http.Handler {
+func (r *Router) newFlowHandler(f *flow) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
-		defer r.metrics.UpdateRequestsDuration(flow.Path, flow.Method, start)
+		defer r.metrics.UpdateRequestsDuration(f.path, f.method, start)
 
 		requestID := getOrCreateRequestID(req)
 		req = req.WithContext(withRequestID(req.Context(), requestID))
-		req = req.WithContext(withRoute(req.Context(), flow.Path))
+		req = req.WithContext(withRoute(req.Context(), f.path))
 
 		log := r.log.With(zap.String("request_id", requestID))
 
+		if f.passthrough {
+			r.handlePassthrough(w, req, f, log)
+			return
+		}
+
 		kctx := newContext(req)
 
-		if !r.runRequestPlugins(w, kctx, flow, log) {
+		if !r.executePlugins(sdk.PluginTypeRequest, w, kctx, f, log) {
 			return
 		}
 
-		req, ok := r.runLuaScripts(w, req, flow, log)
-		if !ok {
-			return
-		}
-
-		upstreamResponses := r.dispatcher.dispatch(flow, req)
+		upstreamResponses := r.scatter.scatter(f, req)
 		if upstreamResponses == nil {
 			r.log.Error("request body too large", zap.Int("max_body_size", maxBodySize))
 			WriteError(w, ClientErrPayloadTooLarge, http.StatusRequestEntityTooLarge)
@@ -135,39 +123,45 @@ func (r *Router) newFlowHandler(flow *Flow) http.Handler {
 			r.log.Debug("dispatched responses", zap.Any("responses", upstreamResponses))
 		}
 
-		httpResp := r.buildResponse(req.Context(), upstreamResponses, flow, log) //nolint:bodyclose // closes in copyResponse
+		httpResp := r.buildResponse(req.Context(), upstreamResponses, f, log)
+		defer func() { _ = httpResp.Body.Close() }()
 
 		kctx.SetResponse(httpResp)
 
-		if !r.runResponsePlugins(w, kctx, flow, log) {
+		if !r.executePlugins(sdk.PluginTypeResponse, w, kctx, f, log) {
 			return
 		}
 
-		finalResp := kctx.Response() //nolint:bodyclose // closes in copyResponse
+		finalResp := kctx.Response() //nolint:bodyclose // synthetic response, closed by defer above
 		if finalResp.Body != nil {
 			bodyBytes, _ := io.ReadAll(finalResp.Body)
-
 			finalResp.ContentLength = int64(len(bodyBytes))
 			finalResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 
-		w.Header().Set("Content-Length", strconv.Itoa(int(kctx.Response().ContentLength))) //nolint:bodyclose // closes in copyResponse
-
-		r.metrics.IncRequestsTotal(flow.Path, req.Method, kctx.Response().StatusCode) //nolint:bodyclose // closes in copyResponse
-		copyResponse(w, kctx.Response())                                              //nolint:bodyclose // closes in copyResponse
+		w.Header().Set("Content-Length", strconv.Itoa(int(finalResp.ContentLength)))
+		r.metrics.IncRequestsTotal(f.path, req.Method, finalResp.StatusCode)
+		r.copyResponse(w, finalResp)
 	})
 }
 
-func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
-	for _, p := range flow.Plugins {
-		if p.Type() != sdk.PluginTypeRequest {
+// executePlugins runs all plugins of the given type in order.
+// On the first plugin error it writes a 500 to w and returns false —
+// the caller must treat false as "response already sent, stop processing".
+func (r *Router) executePlugins(pluginType sdk.PluginType, w http.ResponseWriter, kctx sdk.Context, f *flow, log *zap.Logger) bool {
+	for _, p := range f.plugins {
+		if p.Type() != pluginType {
 			continue
 		}
 
-		log.Debug("executing request plugin", zap.String("name", p.Info().Name))
+		log.Debug("executing plugin",
+			zap.String("type", pluginPhaseName(pluginType)),
+			zap.String("name", p.Info().Name),
+		)
 
 		if err := p.Execute(kctx); err != nil {
-			log.Error("failed to execute request plugin",
+			log.Error("plugin execution failed",
+				zap.String("type", pluginPhaseName(pluginType)),
 				zap.String("name", p.Info().Name),
 				zap.Error(err),
 			)
@@ -180,93 +174,10 @@ func (r *Router) runRequestPlugins(w http.ResponseWriter, kctx Context, flow *Fl
 	return true
 }
 
-func (r *Router) runResponsePlugins(w http.ResponseWriter, kctx Context, flow *Flow, log *zap.Logger) bool {
-	for _, p := range flow.Plugins {
-		if p.Type() != sdk.PluginTypeResponse {
-			continue
-		}
+func (r *Router) buildResponse(ctx context.Context, upstreamResponses []upstreamResponse, f *flow, log *zap.Logger) *http.Response {
+	aggregated := r.aggregator.aggregate(f.upstreams, upstreamResponses, f.aggregation, log.Named("aggregated"))
 
-		log.Debug("executing response plugin", zap.String("name", p.Info().Name))
-
-		if err := p.Execute(kctx); err != nil {
-			log.Error("failed to execute response plugin",
-				zap.String("name", p.Info().Name),
-				zap.Error(err),
-			)
-			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-			return false
-		}
-	}
-
-	return true
-}
-
-func (r *Router) runLuaScripts(w http.ResponseWriter, req *http.Request, flow *Flow, log *zap.Logger) (*http.Request, bool) {
-	for _, script := range flow.Scripts {
-		if script.Source != sourceFile {
-			log.Warn("lua script configured but source is not 'file'",
-				zap.String("source", script.Source),
-				zap.String("script", script.Path),
-			)
-
-			continue
-		}
-
-		// If Lumos was not enabled in configuration
-		if r.lumos == nil {
-			log.Error("lua script configured but lumos is disabled", zap.String("script", script.Path))
-			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-			return nil, false
-		}
-
-		lumosResp, err := r.lumos.SendGet(req.Context(), req, script.Path)
-		if err != nil {
-			log.Error("failed to execute lua script",
-				zap.String("script", script.Path),
-				zap.Error(err),
-			)
-			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-			return nil, false
-		}
-
-		switch lumosResp.Action {
-		case lumosActionContinue:
-			req = applyLumosResponse(req, lumosResp)
-		case lumosActionAbort:
-			log.Error("lumos aborted request")
-			WriteError(w, ClientErrAborted, lumosResp.HTTPStatus)
-
-			return nil, false
-		default:
-			log.Error("unknown action from lumos",
-				zap.String("action", lumosResp.Action),
-				zap.String("script", script.Path),
-			)
-			WriteError(w, ClientErrInternal, http.StatusInternalServerError)
-
-			return nil, false
-		}
-	}
-
-	return req, true
-}
-
-func applyLumosResponse(req *http.Request, lumosResp *LumosJSONResponse) *http.Request {
-	req.Method = lumosResp.Method
-	req.URL.Path = lumosResp.Path
-	req.URL.RawQuery = lumosResp.Query
-	req.Header = lumosResp.Headers
-
-	return req
-}
-
-func (r *Router) buildResponse(ctx context.Context, upstreamResponses []UpstreamResponse, flow *Flow, log *zap.Logger) *http.Response {
-	aggregated := r.aggregator.aggregate(flow.Upstreams, upstreamResponses, flow.Aggregation, log.Named("aggregated"))
-
-	headers := aggregated.Headers
+	headers := aggregated.headers
 	if headers == nil {
 		headers = make(http.Header)
 	}
@@ -276,13 +187,13 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []Upstream
 
 	if log.Core().Enabled(zap.DebugLevel) {
 		log.Debug("aggregated responses",
-			zap.String("strategy", flow.Aggregation.Strategy.String()),
+			zap.String("strategy", f.aggregation.strategy.String()),
 			zap.Any("aggregated", aggregated),
 		)
 	}
 
-	status := statusFromErrors(aggregated.Errors, aggregated.Partial)
-	body := buildResponseBody(aggregated)
+	status := r.statusFromErrors(aggregated.errors, aggregated.partial)
+	body := r.buildResponseBody(aggregated)
 
 	return &http.Response{
 		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
@@ -293,28 +204,18 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []Upstream
 	}
 }
 
-func buildResponseBody(aggregated AggregatedResponse) []byte {
+func (r *Router) buildResponseBody(aggregated aggregatedResponse) []byte {
 	switch {
-	case len(aggregated.Errors) > 0 && !aggregated.Partial:
-		return mustMarshal(ClientResponse{
-			Data:   nil,
-			Errors: aggregated.Errors,
-		})
-	case aggregated.Partial:
-		return mustMarshal(ClientResponse{
-			Data:   aggregated.Data,
-			Errors: aggregated.Errors,
-		})
+	case len(aggregated.errors) > 0 && !aggregated.partial:
+		return mustMarshal(ClientResponse{Data: nil, Errors: aggregated.errors})
+	case aggregated.partial:
+		return mustMarshal(ClientResponse{Data: aggregated.data, Errors: aggregated.errors})
 	default:
-		return mustMarshal(ClientResponse{
-			Data:   aggregated.Data,
-			Errors: nil,
-		})
+		return mustMarshal(ClientResponse{Data: aggregated.data, Errors: nil})
 	}
 }
 
-// copyResponse copies the *http.Response to the http.ResponseWriter.
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
+func (r *Router) copyResponse(w http.ResponseWriter, resp *http.Response) {
 	for k, vv := range resp.Header {
 		if _, skip := hopByHopHeaders[k]; skip {
 			continue
@@ -329,11 +230,53 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
-		_ = resp.Body.Close()
 	}
 }
 
-// mustMarshal marshals the given value to JSON.
+// statusFromErrors maps aggregation errors to the most appropriate HTTP status code.
+// partial takes precedence: even with errors, 206 signals a partial success.
+func (r *Router) statusFromErrors(errors []ClientError, partial bool) int {
+	if partial {
+		return http.StatusPartialContent
+	}
+
+	if len(errors) == 0 {
+		return http.StatusOK
+	}
+
+	var selected ClientError
+
+	maxPriority := -1
+
+	for _, e := range errors {
+		if p := errorPriority(e); p > maxPriority {
+			maxPriority = p
+			selected = e
+		}
+	}
+
+	switch selected {
+	case ClientErrRateLimitExceeded:
+		return http.StatusTooManyRequests
+	case ClientErrPayloadTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case ClientErrUpstreamBodyTooLarge, ClientErrUpstreamUnavailable, ClientErrUpstreamError, ClientErrUpstreamMalformed:
+		return http.StatusBadGateway
+	case ClientErrValueConflict:
+		return http.StatusConflict
+	case ClientErrAborted:
+		// Client disconnected before the upstream responded; there is nothing
+		// meaningful to send back, but we still need a status for logging.
+		return http.StatusServiceUnavailable
+	case ClientErrInternal:
+		return http.StatusInternalServerError
+	}
+
+	return http.StatusInternalServerError
+}
+
+// ── Package-level helpers ─────────────────────────────────────────────────────
+
 func mustMarshal(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -343,6 +286,7 @@ func mustMarshal(v any) []byte {
 	return b
 }
 
+// extractClientIP resolves the real client IP following the chain:
 // X-Forwarded-For → X-Real-IP → RemoteAddr.
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -372,57 +316,40 @@ func getOrCreateRequestID(r *http.Request) string {
 	return strings.ToLower(ulid.MustNew(ulid.Timestamp(time.Now()), globalEntropy).String())
 }
 
-func statusFromErrors(errors []ClientError, partial bool) int {
-	if partial {
-		return http.StatusPartialContent
-	}
+const (
+	errPriorityRateLimit   = 100
+	errPriorityPayloadSize = 90
+	errPriorityConflict    = 80
+	errPriorityUpstream    = 50
+	errPriorityInternal    = 10
+)
 
-	if len(errors) == 0 {
-		return http.StatusOK
-	}
-
-	var selected ClientError
-	maxPriority := -1
-
-	for _, e := range errors {
-		p := errorPriority(e)
-		if p > maxPriority {
-			maxPriority = p
-			selected = e
-		}
-	}
-
-	switch selected {
-	case ClientErrRateLimitExceeded:
-		return http.StatusTooManyRequests
-	case ClientErrPayloadTooLarge:
-		return http.StatusRequestEntityTooLarge
-	case ClientErrUpstreamBodyTooLarge, ClientErrUpstreamUnavailable, ClientErrUpstreamError, ClientErrUpstreamMalformed:
-		return http.StatusBadGateway
-	case ClientErrValueConflict:
-		return http.StatusConflict
-	default:
-		return http.StatusInternalServerError
-	}
-}
-
-//nolint:mnd // error priority be configurable in future releases
+// clientErrorPriority determines which error code wins when multiple are present.
+// Higher value = more specific HTTP status code returned.
 func errorPriority(e ClientError) int {
 	switch e {
 	case ClientErrRateLimitExceeded:
-		return 100
-	case ClientErrPayloadTooLarge,
-		ClientErrUpstreamBodyTooLarge:
-		return 90
+		return errPriorityRateLimit
+	case ClientErrPayloadTooLarge, ClientErrUpstreamBodyTooLarge:
+		return errPriorityPayloadSize
 	case ClientErrValueConflict:
-		return 80
-	case ClientErrUpstreamUnavailable,
-		ClientErrUpstreamError,
-		ClientErrUpstreamMalformed:
-		return 50
+		return errPriorityConflict
+	case ClientErrUpstreamUnavailable, ClientErrUpstreamError, ClientErrUpstreamMalformed, ClientErrAborted:
+		return errPriorityUpstream
 	case ClientErrInternal:
-		return 10
+		return errPriorityInternal
+	}
+
+	return 0
+}
+
+func pluginPhaseName(phase sdk.PluginType) string {
+	switch phase {
+	case sdk.PluginTypeRequest:
+		return "request"
+	case sdk.PluginTypeResponse:
+		return "response"
 	default:
-		return 0
+		return "unknown"
 	}
 }

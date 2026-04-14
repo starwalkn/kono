@@ -30,15 +30,7 @@ func (m *Middleware) Init(cfg map[string]interface{}) error {
 	m.allowedOrigins = make(map[string]struct{})
 
 	if origins, ok := cfg["allowed_origins"].([]interface{}); ok {
-		for _, o := range origins {
-			if s, ook := o.(string); ook {
-				if s == "*" {
-					m.allowAll = true
-				}
-
-				m.allowedOrigins[s] = struct{}{}
-			}
-		}
+		m.resolveAllowedOrigins(origins)
 	}
 
 	if methods, ok := cfg["allowed_methods"].([]interface{}); ok {
@@ -71,6 +63,7 @@ func (m *Middleware) Init(cfg map[string]interface{}) error {
 
 	return nil
 }
+
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -93,6 +86,21 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (m *Middleware) resolveAllowedOrigins(origins []interface{}) {
+	for _, o := range origins {
+		s, ok := o.(string)
+		if !ok {
+			continue
+		}
+
+		if s == "*" {
+			m.allowAll = true
+		}
+
+		m.allowedOrigins[s] = struct{}{}
+	}
 }
 
 func (m *Middleware) isOriginAllowed(origin string) bool {

@@ -1,7 +1,0 @@
-return {
-    default = {
-        lua     = "luajit",
-        verbose = true,
-        spec    = "spec/",
-    }
-}

@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+
+	"github.com/starwalkn/kono/sdk"
 )
 
 const (
@@ -20,11 +22,11 @@ const (
 
 const extSo = ".so"
 
-func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
-	plugins := make([]Plugin, 0, len(cfgs))
+func initPlugins(cfgs []PluginConfig, log *zap.Logger) []sdk.Plugin {
+	plugins := make([]sdk.Plugin, 0, len(cfgs))
 
 	for _, cfg := range cfgs {
-		if slices.ContainsFunc(plugins, func(p Plugin) bool {
+		if slices.ContainsFunc(plugins, func(p sdk.Plugin) bool {
 			return p.Info().Name == cfg.Name
 		}) {
 			continue
@@ -47,11 +49,11 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []Plugin {
 	return plugins
 }
 
-func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []Middleware {
-	middlewares := make([]Middleware, 0, len(cfgs))
+func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []sdk.Middleware {
+	middlewares := make([]sdk.Middleware, 0, len(cfgs))
 
 	for _, cfg := range cfgs {
-		if slices.ContainsFunc(middlewares, func(m Middleware) bool {
+		if slices.ContainsFunc(middlewares, func(m sdk.Middleware) bool {
 			return m.Name() == cfg.Name
 		}) {
 			continue
@@ -89,4 +91,45 @@ func resolveSoPath(source, name, filePath, builtinPath string) string {
 	default:
 		panic(fmt.Sprintf("invalid source '%s'", source))
 	}
+}
+
+func loadPlugin(path string, cfg map[string]interface{}, log *zap.Logger) sdk.Plugin {
+	factory := loadSymbol[func() sdk.Plugin](path, "NewPlugin", log)
+	if factory == nil {
+		return nil
+	}
+
+	p := factory()
+	if p == nil {
+		log.Error("plugin factory returned nil", zap.String("path", path))
+		return nil
+	}
+
+	p.Init(cfg)
+
+	return p
+}
+
+func loadMiddleware(path string, cfg map[string]interface{}, log *zap.Logger) sdk.Middleware {
+	factory := loadSymbol[func() sdk.Middleware](path, "NewMiddleware", log)
+	if factory == nil {
+		return nil
+	}
+
+	mw := factory()
+	if mw == nil {
+		log.Error("middleware factory returned nil", zap.String("path", path))
+		return nil
+	}
+
+	if err := mw.Init(cfg); err != nil {
+		log.Error("cannot initialize middleware",
+			zap.String("name", mw.Name()),
+			zap.Error(err),
+		)
+
+		return nil
+	}
+
+	return mw
 }

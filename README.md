@@ -20,7 +20,6 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 - 🚀 High-performance HTTP reverse proxy
 - 🔀 Request fan-out & response aggregation (merge, array, namespace)
 - 🧩 Dynamic `.so` plugin system (request & response phase)
-- 📜 Lua scripting via **Lumos** (LuaJIT over Unix socket)
 - 🔗 Path parameter extraction and forwarding
 - 🔁 Retry, circuit breaker & load balancing (round-robin, least-conns)
 - 📊 Prometheus metrics with circuit breaker state tracking
@@ -69,23 +68,3 @@ Open-source. See `LICENSE` file for details.
 <p align="center">
 Made with ❤️ in Go
 </p>
-<<<<<<< HEAD
-
-
-
-Show HN: Kono – lightweight API gateway in Go with plugins and Lua scripting
-
-https://starwalkn.github.io/konodocs
-
-Kono is a lightweight API gateway written in Go. The main idea is parallel fan-out — dispatching a single request to multiple upstreams simultaneously and aggregating their responses (merge, array, or namespace by upstream name).
-Key things it does out of the box via YAML config:
-
-Fan-out to multiple upstreams with configurable aggregation strategies
-Per-upstream circuit breaker, retry with backoff, and load balancing
-Request modification via Lua scripts (Lumos) over Unix sockets — no network overhead
-Dynamic .so plugins for hooking into request/response phases
-Prometheus metrics with circuit breaker state tracking
-
-It's aimed at teams who need a BFF layer or API composition without pulling in a large gateway solution. Still early — v0.1.0, looking for feedback and contributors.
-=======
->>>>>>> origin/master

@@ -23,62 +23,51 @@ import (
 	"github.com/starwalkn/kono/internal/metric"
 )
 
-type Upstream interface {
-	Name() string
-	Policy() Policy
-	Call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse
+type upstream interface {
+	name() string
+	call(ctx context.Context, original *http.Request, originalBody []byte) *upstreamResponse
 }
 
-type UpstreamResponse struct {
-	Status  int
-	Headers http.Header
-	Body    []byte
-	Err     *UpstreamError
+type upstreamResponse struct {
+	status  int
+	headers http.Header
+	body    []byte
+	err     *upstreamError
 }
 
-type UpstreamError struct {
-	Kind UpstreamErrorKind // Error kind for aggregator.
-	Err  error             // Original error. Not for client!
+type upstreamError struct {
+	kind upstreamErrorKind
+	err  error
 }
 
-// Error returns the upstream error kind. Error kind is a custom string type, not error interface!
-func (ue *UpstreamError) Error() string {
-	return string(ue.Kind)
-}
+func (ue *upstreamError) Error() string { return string(ue.kind) }
+func (ue *upstreamError) Unwrap() error { return ue.err }
 
-// Unwrap returns the original error.
-func (ue *UpstreamError) Unwrap() error {
-	return ue.Err
-}
-
-type UpstreamErrorKind string
+type upstreamErrorKind string
 
 const (
-	UpstreamTimeout      UpstreamErrorKind = "timeout"
-	UpstreamCanceled     UpstreamErrorKind = "canceled"
-	UpstreamConnection   UpstreamErrorKind = "connection"
-	UpstreamBadStatus    UpstreamErrorKind = "bad_status"
-	UpstreamReadError    UpstreamErrorKind = "read_error"
-	UpstreamBodyTooLarge UpstreamErrorKind = "body_too_large"
-	UpstreamCircuitOpen  UpstreamErrorKind = "circuit_open"
-	UpstreamInternal     UpstreamErrorKind = "internal"
+	upstreamTimeout      upstreamErrorKind = "timeout"
+	upstreamCanceled     upstreamErrorKind = "canceled"
+	upstreamConnection   upstreamErrorKind = "connection"
+	upstreamBadStatus    upstreamErrorKind = "bad_status"
+	upstreamReadError    upstreamErrorKind = "read_error"
+	upstreamBodyTooLarge upstreamErrorKind = "body_too_large"
+	upstreamCircuitOpen  upstreamErrorKind = "circuit_open"
+	upstreamInternal     upstreamErrorKind = "internal"
 )
 
-// httpUpstream is an implementation of Upstream interface.
 type httpUpstream struct {
-	cfg   upstreamConfig
-	state upstreamState
-
+	cfg            upstreamConfig
+	state          upstreamState
 	circuitBreaker *circuitbreaker.CircuitBreaker
-
-	metrics metric.Metrics
-	log     *zap.Logger
-	client  *http.Client
+	metrics        metric.Metrics
+	log            *zap.Logger
+	client         *http.Client
 }
 
 type upstreamConfig struct {
-	id     string // UUID for internal usage.
-	name   string // For logs.
+	id     string
+	name   string
 	hosts  []string
 	path   string
 	method string
@@ -89,90 +78,127 @@ type upstreamConfig struct {
 	forwardParams  []string
 	trustedProxies []*net.IPNet
 
-	lbMode LBMode
-	policy Policy
+	lbMode lbMode
+	policy upstreamPolicy
 }
 
 type upstreamState struct {
-	currentHostIdx    int64   // Round Robin.
-	activeConnections []int64 // Least Connections.
+	currentHostIdx    int64
+	activeConnections []int64
 }
 
-func (u *httpUpstream) Name() string   { return u.cfg.name }
-func (u *httpUpstream) Policy() Policy { return u.cfg.policy }
+func (u *httpUpstream) name() string { return u.cfg.name }
 
-func (u *httpUpstream) Call(ctx context.Context, original *http.Request, originalBody []byte) *UpstreamResponse {
+// call executes the request with retries and circuit breaker protection,
+// then validates the final response against the upstream's own policy.
+func (u *httpUpstream) call(ctx context.Context, original *http.Request, originalBody []byte) *upstreamResponse {
 	log := u.log.With(
 		zap.String("upstream", u.cfg.name),
 		zap.String("request_id", requestIDFromContext(original.Context())),
 	)
 
-	var resp *UpstreamResponse
+	resp := u.callWithRetry(ctx, original, originalBody, log)
 
-	retryPolicy := u.cfg.policy.Retry
+	u.updateCircuitBreaker(resp, log)
 
-	for attempt := 0; attempt <= retryPolicy.MaxRetries; attempt++ {
+	// Policy is applied after the circuit breaker update intentionally:
+	// a misconfigured allowedStatuses or requireBody should not cause the breaker to open.
+	u.applyPolicy(ctx, resp)
+
+	return resp
+}
+
+func (u *httpUpstream) callWithRetry(ctx context.Context, original *http.Request, originalBody []byte, log *zap.Logger) *upstreamResponse {
+	retry := u.cfg.policy.retry
+
+	var resp *upstreamResponse
+
+	for attempt := 0; attempt <= retry.maxRetries; attempt++ {
 		if attempt > 0 {
 			u.metrics.IncUpstreamRetriesTotal(routeFromContext(ctx), u.cfg.name)
 		}
 
 		if err := ctx.Err(); err != nil {
-			return &UpstreamResponse{
-				Err: &UpstreamError{
-					Kind: UpstreamCanceled,
-					Err:  err,
-				},
-			}
+			return &upstreamResponse{err: &upstreamError{kind: upstreamCanceled, err: err}}
 		}
 
 		if u.circuitBreaker != nil && !u.circuitBreaker.Allow() {
-			log.Error("circuit breaker deny request")
+			log.Error("circuit breaker open, request denied")
 			u.metrics.SetCircuitBreakerState(u.cfg.name, float64(u.circuitBreaker.State()))
 
-			return &UpstreamResponse{
-				Err: &UpstreamError{
-					Kind: UpstreamCircuitOpen,
-					Err:  errors.New("upstream circuit breaker is open"),
+			return &upstreamResponse{
+				err: &upstreamError{
+					kind: upstreamCircuitOpen,
+					err:  errors.New("upstream circuit breaker is open"),
 				},
 			}
 		}
 
-		resp = u.call(ctx, original, originalBody, log)
+		resp = u.doCall(ctx, original, originalBody, log)
 
-		if resp.Err == nil && !slices.Contains(retryPolicy.RetryOnStatuses, resp.Status) {
+		if resp.err == nil && !slices.Contains(retry.retryOnStatuses, resp.status) {
 			break
 		}
 
-		if attempt == retryPolicy.MaxRetries {
+		if attempt == retry.maxRetries {
 			break
 		}
 
-		if retryPolicy.BackoffDelay > 0 {
+		if retry.backoffDelay > 0 {
 			select {
-			case <-time.After(retryPolicy.BackoffDelay):
+			case <-time.After(retry.backoffDelay):
 			case <-ctx.Done():
-				return &UpstreamResponse{
-					Err: &UpstreamError{Kind: UpstreamCanceled, Err: ctx.Err()},
-				}
+				return &upstreamResponse{err: &upstreamError{kind: upstreamCanceled, err: ctx.Err()}}
 			}
 		}
-	}
-
-	if u.circuitBreaker != nil {
-		if resp.Err != nil && u.isBreakerFailure(resp.Err) {
-			log.Error("upstream request failed, opening circuit breaker")
-			u.circuitBreaker.OnFailure()
-		} else {
-			u.circuitBreaker.OnSuccess()
-		}
-
-		u.metrics.SetCircuitBreakerState(u.cfg.name, float64(u.circuitBreaker.State()))
 	}
 
 	return resp
 }
 
-func (u *httpUpstream) call(ctx context.Context, original *http.Request, originalBody []byte, log *zap.Logger) *UpstreamResponse {
+func (u *httpUpstream) updateCircuitBreaker(resp *upstreamResponse, log *zap.Logger) {
+	if u.circuitBreaker == nil {
+		return
+	}
+
+	if resp.err != nil && u.isBreakerFailure(resp.err) {
+		log.Error("upstream request failed, recording circuit breaker failure")
+		u.circuitBreaker.OnFailure()
+	} else {
+		u.circuitBreaker.OnSuccess()
+	}
+
+	u.metrics.SetCircuitBreakerState(u.cfg.name, float64(u.circuitBreaker.State()))
+}
+
+// applyPolicy validates the response against the upstream's own policy rules.
+// Violations are merged into resp.err so the original error kind is preserved.
+func (u *httpUpstream) applyPolicy(ctx context.Context, resp *upstreamResponse) {
+	var errs []error
+
+	if u.cfg.policy.requireBody && len(resp.body) == 0 {
+		errs = append(errs, errors.New("empty body not allowed by upstream policy"))
+	}
+
+	if len(u.cfg.policy.allowedStatuses) > 0 && !slices.Contains(u.cfg.policy.allowedStatuses, resp.status) {
+		errs = append(errs, fmt.Errorf("status %d not in allowed list", resp.status))
+	}
+
+	if len(errs) == 0 {
+		return
+	}
+
+	u.metrics.IncUpstreamErrorsTotal(routeFromContext(ctx), u.cfg.name, "policy_violation")
+
+	combined := errors.Join(errs...)
+	if resp.err == nil {
+		resp.err = &upstreamError{err: combined}
+	} else {
+		resp.err.err = errors.Join(resp.err.err, combined)
+	}
+}
+
+func (u *httpUpstream) doCall(ctx context.Context, original *http.Request, originalBody []byte, log *zap.Logger) *upstreamResponse {
 	ctx, cancel := context.WithTimeout(ctx, u.cfg.timeout)
 	defer cancel()
 
@@ -183,85 +209,60 @@ func (u *httpUpstream) call(ctx context.Context, original *http.Request, origina
 		defer atomic.AddInt64(&u.state.activeConnections[selectedHost], -1)
 	}
 
-	req, upstreamErr := u.newRequest(ctx, original, originalBody, u.cfg.hosts[selectedHost])
-	if upstreamErr != nil {
-		return &UpstreamResponse{
-			Err: &UpstreamError{
-				Kind: UpstreamInternal,
-				Err:  upstreamErr,
-			},
-		}
+	req, err := u.newRequest(ctx, original, originalBody, u.cfg.hosts[selectedHost])
+	if err != nil {
+		return &upstreamResponse{err: &upstreamError{kind: upstreamInternal, err: err}}
 	}
 
-	httpResp, upstreamErr := u.client.Do(req)
-	if upstreamErr != nil {
-		log.Error("upstream request failed", zap.Error(upstreamErr))
-
-		return &UpstreamResponse{
-			Err: &UpstreamError{
-				Kind: u.classifyDoError(upstreamErr),
-				Err:  upstreamErr,
-			},
-		}
+	httpResp, err := u.client.Do(req)
+	if err != nil {
+		log.Error("upstream request failed", zap.Error(err))
+		return &upstreamResponse{err: &upstreamError{kind: u.classifyDoError(err), err: err}}
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode >= http.StatusInternalServerError {
 		log.Error("upstream returned server error", zap.Int("status_code", httpResp.StatusCode))
 
-		return &UpstreamResponse{
-			Status: httpResp.StatusCode,
-			Err: &UpstreamError{
-				Kind: UpstreamBadStatus,
-				Err:  fmt.Errorf("upstream returned %d", httpResp.StatusCode),
-			},
+		return &upstreamResponse{
+			status: httpResp.StatusCode,
+			err:    &upstreamError{kind: upstreamBadStatus, err: fmt.Errorf("upstream returned %d", httpResp.StatusCode)},
 		}
 	}
 
-	body, err := u.readBody(ctx, httpResp.Body, log)
-	if err != nil {
-		return &UpstreamResponse{
-			Status: httpResp.StatusCode,
-			Err:    err,
-		}
+	body, uerr := u.readBody(ctx, httpResp.Body, log)
+	if uerr != nil {
+		return &upstreamResponse{status: httpResp.StatusCode, err: uerr}
 	}
 
-	upstreamResp := &UpstreamResponse{
-		Status:  httpResp.StatusCode,
-		Headers: u.filterHeaders(httpResp.Header),
-		Body:    body,
+	return &upstreamResponse{
+		status:  httpResp.StatusCode,
+		headers: u.filterHeaders(httpResp.Header),
+		body:    body,
 	}
-
-	return upstreamResp
 }
 
-func (u *httpUpstream) readBody(ctx context.Context, body io.ReadCloser, log *zap.Logger) ([]byte, *UpstreamError) {
+func (u *httpUpstream) readBody(ctx context.Context, body io.ReadCloser, log *zap.Logger) ([]byte, *upstreamError) {
 	reader := io.Reader(body)
 
-	if u.cfg.policy.MaxResponseBodySize > 0 {
-		log.Debug("applying response body size limit", zap.Int64("limit", u.cfg.policy.MaxResponseBodySize))
-		reader = io.LimitReader(reader, u.cfg.policy.MaxResponseBodySize+1)
+	if u.cfg.policy.maxResponseBodySize > 0 {
+		log.Debug("applying response body size limit", zap.Int64("limit", u.cfg.policy.maxResponseBodySize))
+		reader = io.LimitReader(reader, u.cfg.policy.maxResponseBodySize+1)
 	}
 
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, &UpstreamError{
-				Kind: UpstreamCanceled,
-				Err:  ctx.Err(),
-			}
+			return nil, &upstreamError{kind: upstreamCanceled, err: ctx.Err()}
 		}
 
-		return nil, &UpstreamError{
-			Kind: UpstreamReadError,
-			Err:  err,
-		}
+		return nil, &upstreamError{kind: upstreamReadError, err: err}
 	}
 
-	if u.cfg.policy.MaxResponseBodySize > 0 && int64(len(data)) > u.cfg.policy.MaxResponseBodySize {
-		return nil, &UpstreamError{
-			Kind: UpstreamBodyTooLarge,
-			Err:  fmt.Errorf("data size exceeds the set limit %d", u.cfg.policy.MaxResponseBodySize),
+	if u.cfg.policy.maxResponseBodySize > 0 && int64(len(data)) > u.cfg.policy.maxResponseBodySize {
+		return nil, &upstreamError{
+			kind: upstreamBodyTooLarge,
+			err:  fmt.Errorf("response size exceeds limit of %d bytes", u.cfg.policy.maxResponseBodySize),
 		}
 	}
 
@@ -269,15 +270,13 @@ func (u *httpUpstream) readBody(ctx context.Context, body io.ReadCloser, log *za
 }
 
 func (u *httpUpstream) filterHeaders(headers http.Header) http.Header {
-	blacklist := u.cfg.policy.HeaderBlacklist
-
-	if len(blacklist) == 0 {
+	if len(u.cfg.policy.headerBlacklist) == 0 {
 		return headers.Clone()
 	}
 
 	filtered := make(http.Header, len(headers))
 	for header, values := range headers {
-		if _, blocked := blacklist[header]; !blocked {
+		if _, blocked := u.cfg.policy.headerBlacklist[header]; !blocked {
 			filtered[header] = values
 		}
 	}
@@ -285,23 +284,37 @@ func (u *httpUpstream) filterHeaders(headers http.Header) http.Header {
 	return filtered
 }
 
-func (u *httpUpstream) classifyDoError(err error) UpstreamErrorKind {
+func (u *httpUpstream) classifyDoError(err error) upstreamErrorKind {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return UpstreamTimeout
+		return upstreamTimeout
 	case errors.Is(err, context.Canceled):
-		return UpstreamCanceled
+		return upstreamCanceled
 	default:
-		return UpstreamConnection
+		return upstreamConnection
+	}
+}
+
+func (u *httpUpstream) isBreakerFailure(uerr *upstreamError) bool {
+	if uerr == nil {
+		return false
+	}
+
+	switch uerr.kind {
+	case upstreamTimeout, upstreamConnection, upstreamBadStatus:
+		return true
+	case upstreamCanceled, upstreamReadError, upstreamBodyTooLarge, upstreamCircuitOpen, upstreamInternal:
+		return false
+	default:
+		return false
 	}
 }
 
 func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, originalBody []byte, targetHost string) (*http.Request, error) {
-	var hostPath string
-
 	path := expandPathParams(u.cfg.path, original)
 	path = strings.TrimPrefix(path, "/")
 
+	var hostPath string
 	if strings.HasSuffix(targetHost, "/") {
 		hostPath = targetHost + path
 	} else {
@@ -310,11 +323,9 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 
 	method := u.cfg.method
 	if method == "" {
-		// Fallback method
 		method = original.Method
 	}
 
-	// Send request body only for body-acceptable methods requests
 	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
 		originalBody = nil
 	}
@@ -325,6 +336,7 @@ func (u *httpUpstream) newRequest(ctx context.Context, original *http.Request, o
 	}
 
 	u.resolveQueries(target, original)
+
 	if err = u.resolveHeaders(target, original); err != nil {
 		return nil, fmt.Errorf("cannot resolve headers: %w", err)
 	}
@@ -338,114 +350,94 @@ func expandPathParams(path string, req *http.Request) string {
 	return pathParamRegexp.ReplaceAllStringFunc(path, func(match string) string {
 		name := match[1 : len(match)-1]
 
-		value := chi.URLParam(req, name)
-		if value == "" {
-			return match
+		if value := chi.URLParam(req, name); value != "" {
+			return value
 		}
 
-		return value
+		return match
 	})
 }
 
-// selectHost returns the index of selected host in hosts slice.
 func (u *httpUpstream) selectHost(log *zap.Logger) int64 {
 	if len(u.cfg.hosts) == 1 {
 		return 0
 	}
 
-	var selectedHost int64
+	var selected int64
 
 	switch u.cfg.lbMode {
 	case lbModeRoundRobin:
 		idx := atomic.AddInt64(&u.state.currentHostIdx, 1)
-		selectedHost = idx % int64(len(u.cfg.hosts))
+		selected = idx % int64(len(u.cfg.hosts))
 	case lbModeLeastConns:
-		var (
-			best           int64
-			minActiveConns int64 = math.MaxInt64
-		)
+		var minConns int64 = math.MaxInt64
 
 		for i := range u.cfg.hosts {
-			curHostActiveConns := atomic.LoadInt64(&u.state.activeConnections[i])
-
-			if curHostActiveConns < minActiveConns {
-				minActiveConns = curHostActiveConns
-				best = int64(i)
+			if c := atomic.LoadInt64(&u.state.activeConnections[i]); c < minConns {
+				minConns = c
+				selected = int64(i)
 			}
 		}
-
-		selectedHost = best
-	default:
-		selectedHost = 0
 	}
 
-	log.Debug("new host selected", zap.String("host", u.cfg.hosts[selectedHost]), zap.String("upstream", u.cfg.name))
+	log.Debug("host selected",
+		zap.String("host", u.cfg.hosts[selected]),
+		zap.String("upstream", u.cfg.name),
+	)
 
-	return selectedHost
+	return selected
 }
 
 func (u *httpUpstream) resolveQueries(target, original *http.Request) {
-	var (
-		targetQuery   = target.URL.Query()
-		originalQuery = original.URL.Query()
-	)
+	targetQ := target.URL.Query()
+	originalQ := original.URL.Query()
 
-	for _, fqs := range u.cfg.forwardQueries {
-		if fqs == "*" {
-			targetQuery = originalQuery
-			break
+	for _, pattern := range u.cfg.forwardQueries {
+		if pattern == "*" {
+			target.URL.RawQuery = originalQ.Encode()
+			return
 		}
 
-		if originalQuery.Get(fqs) == "" {
-			continue
+		if v := originalQ.Get(pattern); v != "" {
+			targetQ.Add(pattern, v)
 		}
-
-		targetQuery.Add(fqs, originalQuery.Get(fqs))
 	}
 
 	for _, param := range u.cfg.forwardParams {
 		if param == "*" {
 			if rctx := chi.RouteContext(original.Context()); rctx != nil {
 				for i, key := range rctx.URLParams.Keys {
-					targetQuery.Set(key, rctx.URLParams.Values[i])
+					targetQ.Set(key, rctx.URLParams.Values[i])
 				}
 			}
 
-			break
+			target.URL.RawQuery = targetQ.Encode()
+
+			return
 		}
 
 		if v := chi.URLParam(original, param); v != "" {
-			targetQuery.Set(param, v)
+			targetQ.Set(param, v)
 		}
 	}
 
-	target.URL.RawQuery = targetQuery.Encode()
+	target.URL.RawQuery = targetQ.Encode()
 }
 
 func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
-	// Set forwarding headers
-	for _, fw := range u.cfg.forwardHeaders {
-		if fw == "*" {
+	for _, pattern := range u.cfg.forwardHeaders {
+		if pattern == "*" {
 			target.Header = original.Header.Clone()
 			break
 		}
 
-		if strings.HasSuffix(fw, "*") {
-			prefix := strings.TrimSuffix(fw, "*")
-
-			for name, values := range original.Header {
-				if strings.HasPrefix(name, prefix) {
-					for _, v := range values {
-						target.Header.Add(name, v)
-					}
-				}
-			}
-
+		if strings.HasSuffix(pattern, "*") {
+			u.forwardHeadersByPrefix(target, original.Header, strings.TrimSuffix(pattern, "*"))
 			continue
 		}
 
-		if original.Header.Get(fw) != "" {
-			target.Header.Add(fw, original.Header.Get(fw))
+		if v := original.Header.Get(pattern); v != "" {
+			target.Header.Add(pattern, v)
 		}
 	}
 
@@ -456,63 +448,78 @@ func (u *httpUpstream) resolveHeaders(target, original *http.Request) error {
 		clientIP = extractClientIP(original)
 	}
 
-	remoteIP := net.ParseIP(clientIP)
-	if remoteIP == nil {
-		return fmt.Errorf("cannot parse client ip '%s", clientIP)
+	parsedClientIP := net.ParseIP(clientIP)
+	if parsedClientIP == nil {
+		return fmt.Errorf("cannot parse client IP %q", clientIP)
 	}
 
-	port := u.resolvePort(original)
-
+	isTLS := original.TLS != nil
+	port := u.resolvePort(u.effectiveHost(original), isTLS)
 	proto := "http"
-	if original.TLS != nil {
+
+	if isTLS {
 		proto = "https"
 	}
 
-	// For untrusted proxies that are not included in the list of configured TrustedProxies,
-	// we cannot blindly trust their X-Forwarded-* headers.
-	// Therefore, in cases where remote_addr is not included in the TrustedProxies list,
-	// we determine the necessary header values ourselves, ignoring similar incoming headers
-	if !u.isTrustedProxy(remoteIP) {
-		target.Header.Set("X-Forwarded-For", clientIP)
-		target.Header.Set("X-Forwarded-Proto", proto)
-		target.Header.Set("X-Forwarded-Host", u.effectiveHost(original))
-		target.Header.Set("X-Forwarded-Port", port)
-
-		forwarded := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, u.effectiveHost(original))
-		target.Header.Set("Forwarded", forwarded)
+	if !u.isTrustedProxy(parsedClientIP) {
+		u.setUntrustedForwardingHeaders(original, target, clientIP, proto, port)
 	} else {
-		if incomingXFF := original.Header.Get("X-Forwarded-For"); incomingXFF != "" {
-			target.Header.Set("X-Forwarded-For", incomingXFF+", "+clientIP)
-		} else {
-			target.Header.Set("X-Forwarded-For", clientIP)
-		}
-
-		if incomingProto := original.Header.Get("X-Forwarded-Proto"); incomingProto == "http" || incomingProto == "https" {
-			proto = incomingProto
-		}
-		target.Header.Set("X-Forwarded-Proto", proto)
-
-		host := u.effectiveHost(original)
-		if incomingHost := original.Header.Get("X-Forwarded-Host"); incomingHost != "" {
-			host = incomingHost
-		}
-		target.Header.Set("X-Forwarded-Host", host)
-
-		if incomingPort := original.Header.Get("X-Forwarded-Port"); isValidPort(incomingPort) {
-			target.Header.Set("X-Forwarded-Port", incomingPort)
-		} else {
-			target.Header.Set("X-Forwarded-Port", port)
-		}
-
-		newHop := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, host)
-		if incomingForwarded := original.Header.Get("Forwarded"); incomingForwarded != "" {
-			target.Header.Set("Forwarded", incomingForwarded+", "+newHop)
-		} else {
-			target.Header.Set("Forwarded", newHop)
-		}
+		u.appendTrustedForwardingHeaders(original, target, clientIP, proto, port)
 	}
 
 	return nil
+}
+
+func (u *httpUpstream) forwardHeadersByPrefix(target *http.Request, src http.Header, prefix string) {
+	for name, values := range src {
+		if strings.HasPrefix(name, prefix) {
+			for _, v := range values {
+				target.Header.Add(name, v)
+			}
+		}
+	}
+}
+
+func (u *httpUpstream) setUntrustedForwardingHeaders(original, target *http.Request, clientIP, proto, port string) {
+	host := u.effectiveHost(original)
+
+	target.Header.Set("X-Forwarded-For", clientIP)
+	target.Header.Set("X-Forwarded-Proto", proto)
+	target.Header.Set("X-Forwarded-Host", host)
+	target.Header.Set("X-Forwarded-Port", port)
+	target.Header.Set("Forwarded", fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, host))
+}
+
+func (u *httpUpstream) appendTrustedForwardingHeaders(original, target *http.Request, clientIP, proto, port string) {
+	if xff := original.Header.Get("X-Forwarded-For"); xff != "" {
+		target.Header.Set("X-Forwarded-For", xff+", "+clientIP)
+	} else {
+		target.Header.Set("X-Forwarded-For", clientIP)
+	}
+
+	if p := original.Header.Get("X-Forwarded-Proto"); p == "http" || p == "https" {
+		proto = p
+	}
+	target.Header.Set("X-Forwarded-Proto", proto)
+
+	host := u.effectiveHost(original)
+	if h := original.Header.Get("X-Forwarded-Host"); h != "" {
+		host = h
+	}
+	target.Header.Set("X-Forwarded-Host", host)
+
+	if p := original.Header.Get("X-Forwarded-Port"); isValidPort(p) {
+		target.Header.Set("X-Forwarded-Port", p)
+	} else {
+		target.Header.Set("X-Forwarded-Port", port)
+	}
+
+	hop := fmt.Sprintf("for=%s; proto=%s; host=%s", clientIP, proto, host)
+	if fwd := original.Header.Get("Forwarded"); fwd != "" {
+		target.Header.Set("Forwarded", fwd+", "+hop)
+	} else {
+		target.Header.Set("Forwarded", hop)
+	}
 }
 
 func (u *httpUpstream) isTrustedProxy(ip net.IP) bool {
@@ -525,21 +532,19 @@ func (u *httpUpstream) isTrustedProxy(ip net.IP) bool {
 	return false
 }
 
-func (u *httpUpstream) resolvePort(req *http.Request) string {
-	_, port, err := net.SplitHostPort(u.effectiveHost(req))
+func (u *httpUpstream) resolvePort(host string, isTLS bool) string {
+	_, port, err := net.SplitHostPort(host)
 	if err != nil {
-		if req.TLS != nil {
-			port = "443"
-		} else {
-			port = "80"
+		if isTLS {
+			return "443"
 		}
+
+		return "80"
 	}
 
 	return port
 }
 
-// effectiveHost returns the host from req.Host if set,
-// falling back to req.URL.Host for client-created requests.
 func (u *httpUpstream) effectiveHost(req *http.Request) string {
 	if req.Host != "" {
 		return req.Host
@@ -553,17 +558,62 @@ func isValidPort(p string) bool {
 	return err == nil && n >= 1 && n <= 65535
 }
 
-func (u *httpUpstream) isBreakerFailure(uerr *UpstreamError) bool {
-	if uerr == nil {
-		return false
+// proxy implements proxyCapable for streaming passthrough flows.
+func (u *httpUpstream) proxy(ctx context.Context, w http.ResponseWriter, original *http.Request) error {
+	selectedHost := u.selectHost(u.log)
+	host := u.cfg.hosts[selectedHost]
+
+	path := expandPathParams(u.cfg.path, original)
+	path = strings.TrimPrefix(path, "/")
+
+	hostPath := host
+	if !strings.HasSuffix(host, "/") {
+		hostPath += "/"
 	}
 
-	switch uerr.Kind {
-	case UpstreamTimeout, UpstreamConnection, UpstreamBadStatus:
-		return true
-	case UpstreamCanceled, UpstreamBodyTooLarge, UpstreamReadError, UpstreamInternal:
-		return false
-	default:
-		return false
+	hostPath += path
+
+	method := u.cfg.method
+	if method == "" {
+		method = original.Method
 	}
+
+	req, err := http.NewRequestWithContext(ctx, method, hostPath, original.Body)
+	if err != nil {
+		return fmt.Errorf("build upstream request: %w", err)
+	}
+
+	req.ContentLength = original.ContentLength
+	req.TransferEncoding = original.TransferEncoding
+
+	u.resolveQueries(req, original)
+
+	if err = u.resolveHeaders(req, original); err != nil {
+		return fmt.Errorf("resolve headers: %w", err)
+	}
+
+	resp, err := u.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upstream call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		if _, skip := hopByHopHeaders[k]; skip {
+			continue
+		}
+
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+
+	if err = streamCopy(w, resp.Body); err != nil {
+		return fmt.Errorf("stream body: %w", err)
+	}
+
+	return nil
 }

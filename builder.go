@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,7 +17,6 @@ import (
 )
 
 type RoutingConfigSet struct {
-	Lumos   LumosConfig
 	Routing RoutingConfig
 	Metrics MetricsConfig
 }
@@ -32,24 +29,15 @@ func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *sdkmetric.Me
 	router := initMinimalRouter(len(routing.Flows), metrics, log)
 	router.rateLimiter = initRateLimiter(routing.RateLimiter, log)
 
-	lumos, err := initLumos(cfgSet.Lumos)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	router.lumos = lumos
-
 	trustedProxies := parseTrustedProxies(cfgSet.Routing.TrustedProxies, log)
 
 	for _, fcfg := range routing.Flows {
-		var flow Flow
-
-		flow, err = compileFlow(fcfg, trustedProxies, metrics, log)
+		compiledFlow, err := compileFlow(fcfg, trustedProxies, metrics, log)
 		if err != nil {
 			log.Fatal("failed to compile flow", zap.Error(err))
 		}
 
-		router.Flows = append(router.Flows, flow)
+		router.flows = append(router.flows, compiledFlow)
 	}
 
 	router.registerFlows()
@@ -65,18 +53,18 @@ func (r *Router) registerFlows() {
 		http.NotFound(w, req)
 	})
 
-	for i := range r.Flows {
-		flow := &r.Flows[i]
+	for i := range r.flows {
+		f := &r.flows[i]
 
-		middlewares := make([]func(http.Handler) http.Handler, 0, len(flow.Middlewares))
-		for _, m := range flow.Middlewares {
+		middlewares := make([]func(http.Handler) http.Handler, 0, len(f.middlewares))
+		for _, m := range f.middlewares {
 			middlewares = append(middlewares, m.Handler)
 		}
 
 		r.chiRouter.With(middlewares...).Method(
-			flow.Method,
-			flow.Path,
-			r.newFlowHandler(flow),
+			f.method,
+			f.path,
+			r.newFlowHandler(f),
 		)
 	}
 }
@@ -84,12 +72,12 @@ func (r *Router) registerFlows() {
 func initMinimalRouter(routesCount int, metrics metric.Metrics, log *zap.Logger) *Router {
 	return &Router{
 		chiRouter: chi.NewMux(),
-		dispatcher: &defaultDispatcher{
-			log:     log.Named("dispatcher"),
+		scatter: &defaultScatter{
+			log:     log.Named("scatter"),
 			metrics: metrics,
 		},
 		aggregator:  &defaultAggregator{},
-		Flows:       make([]Flow, 0, routesCount),
+		flows:       make([]flow, 0, routesCount),
 		log:         log,
 		metrics:     metrics,
 		rateLimiter: nil,
@@ -135,32 +123,6 @@ func initRateLimiter(cfg RateLimiterConfig, log *zap.Logger) *ratelimit.RateLimi
 	return rl
 }
 
-//nolint:nilnil // nil pointer is allowed is lumos was not enabled
-func initLumos(cfg LumosConfig) (*lumos, error) {
-	if !cfg.Enabled {
-		return nil, nil
-	}
-
-	rawMaxMsg := os.Getenv("LUMOS_MAX_MSG")
-	if rawMaxMsg == "" {
-		return nil, errors.New("LUMOS_MAX_MSG environment variable is not set")
-	}
-
-	maxMsg, err := strconv.Atoi(rawMaxMsg)
-	if err != nil || maxMsg <= 0 {
-		return nil, fmt.Errorf("invalid LUMOS_MAX_MSG value: %q", rawMaxMsg)
-	}
-
-	lumosCfg := lumosConfig{
-		socketPath:          lumosSocketPath,
-		socketReadDeadline:  cfg.ReadDeadline,
-		socketWriteDeadline: cfg.WriteDeadline,
-		maxMsg:              maxMsg,
-	}
-
-	return &lumos{cfg: lumosCfg}, nil
-}
-
 func parseTrustedProxies(proxies []string, log *zap.Logger) []*net.IPNet {
 	result := make([]*net.IPNet, 0, len(proxies))
 
@@ -179,38 +141,52 @@ func parseTrustedProxies(proxies []string, log *zap.Logger) []*net.IPNet {
 	return result
 }
 
-func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics metric.Metrics, log *zap.Logger) (Flow, error) {
+func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics metric.Metrics, log *zap.Logger) (flow, error) {
 	upstreams := initUpstreams(cfg.Upstreams, trustedProxies, metrics, log)
 
-	aggregation, err := initAggregation(cfg.Aggregation, upstreams)
-	if err != nil {
-		return Flow{}, err
+	if cfg.Passthrough && len(upstreams) != 1 {
+		return flow{}, fmt.Errorf(
+			"passthrough flow '%s' must have exactly one upstream, got %d",
+			cfg.Path, len(upstreams),
+		)
 	}
 
-	return Flow{
-		Path:                 cfg.Path,
-		Method:               cfg.Method,
-		Aggregation:          aggregation,
-		MaxParallelUpstreams: cfg.MaxParallelUpstreams,
-		Upstreams:            upstreams,
-		Plugins:              initPlugins(cfg.Plugins, log),
-		Middlewares:          initMiddlewares(cfg.Middlewares, log),
+	var aggregationParams aggregation
+
+	if !cfg.Passthrough {
+		var err error
+
+		aggregationParams, err = initAggregation(cfg.Aggregation, upstreams)
+		if err != nil {
+			return flow{}, err
+		}
+	}
+
+	return flow{
+		path:                 cfg.Path,
+		method:               cfg.Method,
+		aggregation:          aggregationParams,
+		maxParallelUpstreams: cfg.MaxParallelUpstreams,
+		upstreams:            upstreams,
+		plugins:              initPlugins(cfg.Plugins, log),
+		middlewares:          initMiddlewares(cfg.Middlewares, log),
+		passthrough:          cfg.Passthrough,
 
 		sem: semaphore.NewWeighted(cfg.MaxParallelUpstreams),
 	}, nil
 }
 
-func initAggregation(cfg AggregationConfig, upstreams []Upstream) (Aggregation, error) {
+func initAggregation(cfg AggregationConfig, upstreams []upstream) (aggregation, error) {
 	strategy, err := compileStrategy(cfg.Strategy)
 	if err != nil {
-		return Aggregation{}, err
+		return aggregation{}, err
 	}
 
-	agg := Aggregation{
-		BestEffort:        cfg.BestEffort,
-		Strategy:          strategy,
-		ConflictPolicy:    conflictPolicyOverwrite, // default, value used only for merge strategy
-		PreferredUpstream: -1,                      // default, value used only for merge strategy
+	agg := aggregation{
+		bestEffort:        cfg.BestEffort,
+		strategy:          strategy,
+		conflictPolicy:    conflictPolicyOverwrite, // default, value used only for merge strategy
+		preferredUpstream: -1,                      // default, value used only for merge strategy
 	}
 
 	if strategy != strategyMerge {
@@ -219,30 +195,30 @@ func initAggregation(cfg AggregationConfig, upstreams []Upstream) (Aggregation, 
 
 	conflict, err := compileConflictPolicy(cfg.OnConflict.Policy)
 	if err != nil {
-		return Aggregation{}, err
+		return aggregation{}, err
 	}
 
-	agg.ConflictPolicy = conflict
+	agg.conflictPolicy = conflict
 
 	if conflict == conflictPolicyPrefer {
 		if cfg.OnConflict.Upstream == "" {
-			return Aggregation{}, errors.New("no upstream specified for on_conflict prefer policy")
+			return aggregation{}, errors.New("no upstream specified for on_conflict prefer policy")
 		}
 
 		idx, found := searchUpstream(cfg.OnConflict.Upstream, upstreams)
 		if !found {
-			return Aggregation{}, errors.New("preferred upstream for on_conflict policy does not exist")
+			return aggregation{}, errors.New("preferred upstream for on_conflict policy does not exist")
 		}
 
-		agg.PreferredUpstream = idx
+		agg.preferredUpstream = idx
 	}
 
 	return agg, nil
 }
 
-func searchUpstream(name string, upstreams []Upstream) (int, bool) {
+func searchUpstream(name string, upstreams []upstream) (int, bool) {
 	for i, u := range upstreams {
-		if u.Name() == name {
+		if u.name() == name {
 			return i, true
 		}
 	}

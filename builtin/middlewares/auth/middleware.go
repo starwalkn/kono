@@ -38,7 +38,10 @@ type JWTConfig struct {
 	JWKSRefreshTimeout time.Duration
 }
 
-const defaultLeeway = 5 * time.Second
+const (
+	defaultLeeway        = 5 * time.Second
+	authHeaderPartsCount = 2
+)
 
 func NewMiddleware() sdk.Middleware {
 	return &Middleware{}
@@ -102,7 +105,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2) //nolint:mnd // it is not magic, it is a fuckin auth header parts
+		parts := strings.SplitN(authHeader, " ", authHeaderPartsCount)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			unauthorized(w)
 			return
