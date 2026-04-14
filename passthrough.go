@@ -65,6 +65,10 @@ func (r *Router) handlePassthrough(w http.ResponseWriter, req *http.Request, flo
 	tw := &trackingWriter{ResponseWriter: w}
 
 	if err := proxy.proxy(req.Context(), tw, kctx.Request()); err != nil {
+		if !tw.written {
+			WriteError(w, ClientErrUpstreamUnavailable, http.StatusBadGateway)
+		}
+
 		log.Error("passthrough upstream error", zap.Error(err))
 	}
 }

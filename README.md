@@ -12,6 +12,8 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 [![License](https://img.shields.io/github/license/starwalkn/kono)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/starwalkn/kono)](https://goreportcard.com/report/github.com/starwalkn/kono)
 [![codecov](https://codecov.io/gh/starwalkn/kono/branch/master/graph/badge.svg)](https://codecov.io/gh/starwalkn/kono)
+![Docker Pulls](https://img.shields.io/docker/pulls/starwalkn/kono)
+![GitHub Created At](https://img.shields.io/github/created-at/starwalkn/kono)
 
 ---
 
