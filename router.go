@@ -182,7 +182,9 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []upstream
 		headers = make(http.Header)
 	}
 
-	headers.Set("X-Request-ID", requestIDFromContext(ctx))
+	requestID := requestIDFromContext(ctx)
+
+	headers.Set("X-Request-ID", requestID)
 	headers.Set("Content-Type", "application/json; charset=utf-8")
 
 	if log.Core().Enabled(zap.DebugLevel) {
@@ -193,7 +195,7 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []upstream
 	}
 
 	status := r.statusFromErrors(aggregated.errors, aggregated.partial)
-	body := r.buildResponseBody(aggregated)
+	body := r.buildResponseBody(aggregated, requestID)
 
 	return &http.Response{
 		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
@@ -204,14 +206,35 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []upstream
 	}
 }
 
-func (r *Router) buildResponseBody(aggregated aggregatedResponse) []byte {
+func (r *Router) buildResponseBody(aggregated aggregatedResponse, requestID string) []byte {
 	switch {
 	case len(aggregated.errors) > 0 && !aggregated.partial:
-		return mustMarshal(ClientResponse{Data: nil, Errors: aggregated.errors})
+		return mustMarshal(ClientResponse{
+			Data:   nil,
+			Errors: aggregated.errors,
+			Meta: ResponseMeta{
+				RequestID: requestID,
+				Partial:   false,
+			},
+		})
 	case aggregated.partial:
-		return mustMarshal(ClientResponse{Data: aggregated.data, Errors: aggregated.errors})
+		return mustMarshal(ClientResponse{
+			Data:   aggregated.data,
+			Errors: aggregated.errors,
+			Meta: ResponseMeta{
+				RequestID: requestID,
+				Partial:   true,
+			},
+		})
 	default:
-		return mustMarshal(ClientResponse{Data: aggregated.data, Errors: nil})
+		return mustMarshal(ClientResponse{
+			Data:   aggregated.data,
+			Errors: nil,
+			Meta: ResponseMeta{
+				RequestID: requestID,
+				Partial:   false,
+			},
+		})
 	}
 }
 
