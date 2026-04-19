@@ -156,7 +156,7 @@ func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics metric.Met
 	if !cfg.Passthrough {
 		var err error
 
-		aggregationParams, err = initAggregation(cfg.Aggregation, upstreams)
+		aggregationParams, err = initAggregation(*cfg.Aggregation, upstreams)
 		if err != nil {
 			return flow{}, err
 		}

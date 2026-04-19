@@ -83,8 +83,11 @@ func runServe() error {
 		log.Error("graceful shutdown failed", zap.Error(err))
 	}
 
-	if err = meterProvider.Shutdown(shutdownCtx); err != nil {
-		log.Error("metrics shutdown failed", zap.Error(err))
+	// If metrics exporter is prometheus, meterProvider will be nil
+	if meterProvider != nil {
+		if err = meterProvider.Shutdown(shutdownCtx); err != nil {
+			log.Error("metrics shutdown failed", zap.Error(err))
+		}
 	}
 
 	stopPprof(shutdownCtx)

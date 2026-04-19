@@ -39,7 +39,7 @@ type ServerConfig struct {
 
 type PprofConfig struct {
 	Enabled bool `yaml:"enabled"`
-	Port    int  `yaml:"port" validate:"min=1,max=65535"`
+	Port    int  `yaml:"port" validate:"required_if=Enabled true,omitempty,min=1,max=65535"`
 }
 
 type MetricsConfig struct {
@@ -73,7 +73,7 @@ type FlowConfig struct {
 	// MaxParallelUpstreams defaults to 2×NumCPU when unset or zero.
 	MaxParallelUpstreams int64 `yaml:"max_parallel_upstreams"`
 
-	Aggregation AggregationConfig  `yaml:"aggregation"  validate:"required"`
+	Aggregation *AggregationConfig `yaml:"aggregation"  validate:"required_if=Passthrough false"`
 	Upstreams   []UpstreamConfig   `yaml:"upstreams"    validate:"required,min=1,dive,required"`
 	Plugins     []PluginConfig     `yaml:"plugins"      validate:"omitempty,dive"`
 	Middlewares []MiddlewareConfig `yaml:"middlewares"  validate:"omitempty,dive"`

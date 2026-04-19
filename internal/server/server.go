@@ -35,6 +35,7 @@ func New(cfg kono.GatewayConfig, log *zap.Logger) (*Server, *sdkmetric.MeterProv
 		_, _ = w.Write([]byte("OK"))
 	}))
 
+	// If metrics exporter is OTLP, promReg will be nil
 	if cfg.Server.Metrics.Enabled && promReg != nil {
 		mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{
 			EnableOpenMetrics: true,

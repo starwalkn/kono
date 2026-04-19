@@ -32,6 +32,12 @@ func (tw *trackingWriter) Write(b []byte) (int, error) {
 	return tw.ResponseWriter.Write(b)
 }
 
+func (tw *trackingWriter) Flush() {
+	if f, ok := tw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // handlePassthrough streams a request directly to the single upstream without buffering,
 // enabling SSE and chunked transfer. Request plugins still run.
 func (r *Router) handlePassthrough(w http.ResponseWriter, req *http.Request, flow *flow, log *zap.Logger) {

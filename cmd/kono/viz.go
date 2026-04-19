@@ -62,39 +62,39 @@ var (
 	}
 
 	styleStrategy = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("117")).
-			Faint(true)
+		Foreground(lipgloss.Color("117")).
+		Faint(true)
 
 	stylePassthrough = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("214")).
-				Bold(true)
+		Foreground(lipgloss.Color("214")).
+		Bold(true)
 
 	styleUpstream = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("111"))
+		Bold(true).
+		Foreground(lipgloss.Color("111"))
 
 	styleMeta = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("243"))
+		Foreground(lipgloss.Color("243"))
 
 	styleCB = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("203"))
 
 	styleLabel = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
-			Width(labelColumnWidth)
+		Foreground(lipgloss.Color("240")).
+		Width(labelColumnWidth)
 
 	styleNames = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("183"))
+		Foreground(lipgloss.Color("183"))
 
 	styleHeader = lipgloss.NewStyle().
-			Bold(true).
-			Background(lipgloss.Color("235")).
-			Foreground(lipgloss.Color("255")).
-			Padding(0, 1)
+		Bold(true).
+		Background(lipgloss.Color("235")).
+		Foreground(lipgloss.Color("255")).
+		Padding(0, 1)
 
 	styleHeaderMeta = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("243")).
-			Padding(0, 1)
+		Foreground(lipgloss.Color("243")).
+		Padding(0, 1)
 )
 
 type viz struct {
