@@ -23,6 +23,7 @@ func (m *mockProxyUpstream) name() string { return m.upstreamName }
 func (m *mockProxyUpstream) call(_ context.Context, _ *http.Request, _ []byte) *upstreamResponse {
 	return &upstreamResponse{}
 }
+
 func (m *mockProxyUpstream) proxy(_ context.Context, w http.ResponseWriter, req *http.Request) error {
 	return m.proxyFn(w, req)
 }
