@@ -127,13 +127,13 @@ type MiddlewareConfig struct {
 
 type PolicyConfig struct {
 	HeaderBlacklist     []string `yaml:"header_blacklist"`
-	AllowedStatuses     []int    `yaml:"allowed_status_codes"`
-	RequireBody         bool     `yaml:"allow_empty_body"`
+	AllowedStatuses     []int    `yaml:"allowed_statuses"`
+	RequireBody         bool     `yaml:"require_body"`
 	MaxResponseBodySize int64    `yaml:"max_response_body_size"`
 
 	RetryConfig          RetryConfig          `yaml:"retry"`
 	CircuitBreakerConfig CircuitBreakerConfig `yaml:"circuit_breaker"`
-	LoadBalancingConfig  LoadBalancingConfig  `yaml:"load_balancer"`
+	LoadBalancingConfig  LoadBalancingConfig  `yaml:"load_balancing"`
 }
 
 type RetryConfig struct {
