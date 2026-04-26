@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 
+	"github.com/starwalkn/kono/internal/logger"
 	"github.com/starwalkn/kono/sdk"
 )
 
@@ -21,21 +24,28 @@ type keyResolver interface {
 	KeyFunc(token *jwt.Token) (any, error)
 }
 
-type Middleware struct {
-	Issuer   string
-	Audience string
-	Resolver keyResolver
-
-	JWTConfig JWTConfig
+// closeable is implemented by resolvers that hold background resources.
+type closeable interface {
+	stop()
 }
 
-type JWTConfig struct {
-	Alg string
+type Middleware struct {
+	issuer    string
+	audience  string
+	resolver  keyResolver
+	jwtConfig jwtConfig
 
-	HMACSecret         []byte         // For HS256.
-	RSAPublicKey       *rsa.PublicKey // For static RS256.
-	JWKSURL            string         // For JWKS.
-	JWKSRefreshTimeout time.Duration
+	log *zap.Logger
+}
+
+type jwtConfig struct {
+	alg string
+
+	hmacSecret          []byte         // For HS256.
+	rsaPublicKey        *rsa.PublicKey // For static RS256.
+	jwksURL             string         // For JWKS.
+	jwksRefreshTimeout  time.Duration
+	jwksRefreshInterval time.Duration
 }
 
 const (
@@ -44,7 +54,9 @@ const (
 )
 
 func NewMiddleware() sdk.Middleware {
-	return &Middleware{}
+	return &Middleware{
+		log: logger.New(false),
+	}
 }
 
 func (m *Middleware) Name() string {
@@ -56,43 +68,51 @@ func (m *Middleware) Init(config map[string]interface{}) error {
 	if !ok {
 		return errors.New("missing issuer")
 	}
-	m.Issuer = issuer
 
 	audience, ok := config["audience"].(string)
 	if !ok {
 		return errors.New("missing audience")
 	}
-	m.Audience = audience
 
 	alg, ok := config["alg"].(string)
 	if !ok || alg == "" {
 		return errors.New("missing or invalid alg")
 	}
 
-	jwtConfig := JWTConfig{
-		Alg: alg,
-	}
+	m.issuer = issuer
+	m.audience = audience
+
+	cfg := jwtConfig{alg: alg}
 
 	hmacSecret, err := parseHMACSecret(config, "hmac_secret")
 	if err != nil {
 		return err
 	}
-	jwtConfig.HMACSecret = hmacSecret
+
+	cfg.hmacSecret = hmacSecret
 
 	rsaPub, err := parseRSAPublicKey(config, "rsa_public_key")
 	if err != nil {
 		return err
 	}
-	jwtConfig.RSAPublicKey = rsaPub
 
-	m.JWTConfig = jwtConfig
+	cfg.rsaPublicKey = rsaPub
 
-	resolver, err := m.newKeyResolver(m.JWTConfig)
+	if url, urlOk := config["jwks_url"].(string); urlOk {
+		cfg.jwksURL = url
+	}
+
+	cfg.jwksRefreshTimeout = parseDuration(config, "jwks_refresh_timeout", defaultJWKSRefreshTimeout)
+	cfg.jwksRefreshInterval = parseDuration(config, "jwks_refresh_interval", defaultJWKSRefreshInterval)
+
+	m.jwtConfig = cfg
+
+	resolver, err := m.newKeyResolver(m.jwtConfig)
 	if err != nil {
 		return err
 	}
 
-	m.Resolver = resolver
+	m.resolver = resolver
 
 	return nil
 }
@@ -106,18 +126,16 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		}
 
 		parts := strings.SplitN(authHeader, " ", authHeaderPartsCount)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		if len(parts) != authHeaderPartsCount || !strings.EqualFold(parts[0], "Bearer") {
 			unauthorized(w)
 			return
 		}
 
-		tokenString := parts[1]
-
 		token, err := jwt.ParseWithClaims(
-			tokenString,
+			parts[1],
 			&jwt.MapClaims{},
-			m.Resolver.KeyFunc,
-			jwt.WithValidMethods([]string{m.JWTConfig.Alg}),
+			m.resolver.KeyFunc,
+			jwt.WithValidMethods([]string{m.jwtConfig.alg}),
 			jwt.WithLeeway(defaultLeeway),
 		)
 		if err != nil || !token.Valid {
@@ -131,32 +149,80 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		issuer, err := claims.GetIssuer()
-		if err != nil {
-			unauthorized(w)
-			return
-		}
-
-		if issuer != m.Issuer {
-			unauthorized(w)
-			return
-		}
-
-		audience, err := claims.GetAudience()
-		if err != nil {
-			unauthorized(w)
-			return
-		}
-
-		if !slices.Contains(audience, m.Audience) {
+		if err = m.validateClaims(claims); err != nil {
 			unauthorized(w)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), ctxKeyClaims{}, claims)
-
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (m *Middleware) Close() {
+	if c, ok := m.resolver.(closeable); ok {
+		c.stop()
+	}
+}
+
+func (m *Middleware) validateClaims(claims *jwt.MapClaims) error {
+	issuer, err := claims.GetIssuer()
+	if err != nil || issuer != m.issuer {
+		return errors.New("invalid issuer")
+	}
+
+	audience, err := claims.GetAudience()
+	if err != nil || !slices.Contains(audience, m.audience) {
+		return errors.New("invalid audience")
+	}
+
+	return nil
+}
+
+func (m *Middleware) newKeyResolver(cfg jwtConfig) (keyResolver, error) {
+	switch cfg.alg {
+	case jwt.SigningMethodHS256.Alg():
+		if len(cfg.hmacSecret) == 0 {
+			return nil, errors.New("HMAC secret not configured")
+		}
+
+		return &hmacResolver{HMACSecret: cfg.hmacSecret}, nil
+
+	case jwt.SigningMethodRS256.Alg():
+		if cfg.jwksURL != "" {
+			return m.newJWKSResolver(cfg)
+		}
+
+		if cfg.rsaPublicKey != nil {
+			return &rsaResolver{RSAPublic: cfg.rsaPublicKey}, nil
+		}
+
+		return nil, errors.New("RSA public key not configured")
+
+	default:
+		return nil, fmt.Errorf("unsupported signing method: %s", cfg.alg)
+	}
+}
+
+func (m *Middleware) newJWKSResolver(cfg jwtConfig) (keyResolver, error) {
+	r := &jwksResolver{
+		url:             cfg.jwksURL,
+		keys:            make(map[string]*rsa.PublicKey),
+		mu:              sync.RWMutex{},
+		refreshTimeout:  cfg.jwksRefreshTimeout,
+		refreshInterval: cfg.jwksRefreshInterval,
+		stopCh:          make(chan struct{}),
+	}
+
+	if err := r.refresh(cfg.jwksRefreshTimeout); err != nil {
+		return nil, fmt.Errorf("initial JWKS fetch failed: %w", err)
+	}
+
+	r.start(func(err error) {
+		m.log.Error("JWKS background refresh failed", zap.Error(err))
+	})
+
+	return r, nil
 }
 
 func unauthorized(w http.ResponseWriter) {
@@ -165,35 +231,16 @@ func unauthorized(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"errors":[{"code":"UNAUTHORIZED"}]}`))
 }
 
-func (m *Middleware) newKeyResolver(cfg JWTConfig) (keyResolver, error) {
-	switch cfg.Alg {
-	case jwt.SigningMethodHS256.Alg():
-		if len(cfg.HMACSecret) == 0 {
-			return nil, errors.New("HMAC secret not configured")
-		}
-
-		return &hmacResolver{HMACSecret: cfg.HMACSecret}, nil
-	case jwt.SigningMethodRS256.Alg():
-		if cfg.JWKSURL != "" {
-			resolver := &jwksResolver{
-				url:            cfg.JWKSURL,
-				keys:           make(map[string]*rsa.PublicKey, 0),
-				refreshTimeout: cfg.JWKSRefreshTimeout,
-			}
-
-			if err := resolver.refresh(cfg.JWKSRefreshTimeout); err != nil {
-				return nil, fmt.Errorf("cannot refresh JWKS: %w", err)
-			}
-
-			return resolver, nil
-		}
-
-		if cfg.RSAPublicKey != nil {
-			return &rsaResolver{RSAPublic: cfg.RSAPublicKey}, nil
-		}
-
-		return nil, errors.New("RSA public key not configured")
-	default:
-		return nil, fmt.Errorf("unsupported signing method: %s", cfg.Alg)
+func parseDuration(config map[string]interface{}, key string, fallback time.Duration) time.Duration {
+	raw, ok := config[key].(string)
+	if !ok {
+		return fallback
 	}
+
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+
+	return d
 }

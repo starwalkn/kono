@@ -74,6 +74,23 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.chiRouter.ServeHTTP(w, req)
 }
 
+func (r *Router) Close() error {
+	for i := range r.flows {
+		for _, mw := range r.flows[i].middlewares {
+			if c, ok := mw.(sdk.Closer); ok {
+				if err := c.Close(); err != nil {
+					r.log.Error("middleware close failed",
+						zap.String("name", mw.Name()),
+						zap.Error(err),
+					)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 func (r *Router) allowRequest(w http.ResponseWriter, clientIP string) bool {
 	if r.rateLimiter == nil {
 		return true
