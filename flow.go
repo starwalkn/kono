@@ -1,25 +1,34 @@
 package kono
 
-import "golang.org/x/sync/semaphore"
+import (
+	"golang.org/x/sync/semaphore"
 
-type Flow struct {
-	Path                 string
-	Method               string
-	Aggregation          Aggregation
-	MaxParallelUpstreams int64
-	Upstreams            []Upstream
-	Scripts              []Script
-	Plugins              []Plugin
-	Middlewares          []Middleware
+	"github.com/starwalkn/kono/sdk"
+)
+
+type flow struct {
+	path                 string
+	method               string
+	aggregation          aggregation
+	maxParallelUpstreams int64
+	upstreams            []upstream
+
+	plugins     []sdk.Plugin
+	middlewares []sdk.Middleware
+
+	// passthrough enables unbuffered streaming proxy mode.
+	// When true: only one upstream is allowed, aggregation is skipped,
+	// and the response body is piped directly to the client (SSE-safe).
+	passthrough bool
 
 	sem *semaphore.Weighted
 }
 
-type Aggregation struct {
-	BestEffort        bool
-	Strategy          aggregationStrategy
-	ConflictPolicy    conflictPolicy // Conflict policy be set only for 'merge' aggregation strategy.
-	PreferredUpstream int            // Preferred upstream used only for 'prefer' conflict policy.
+type aggregation struct {
+	bestEffort        bool
+	strategy          aggregationStrategy
+	conflictPolicy    conflictPolicy // Conflict policy be set only for 'merge' aggregation strategy.
+	preferredUpstream int            // Preferred upstream used only for 'prefer' conflict policy.
 }
 
 type aggregationStrategy uint8

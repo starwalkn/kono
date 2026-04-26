@@ -12,11 +12,18 @@ import (
 	"github.com/lestrrat-go/jwx/jwk"
 )
 
+const (
+	defaultJWKSRefreshTimeout  = 5 * time.Second
+	defaultJWKSRefreshInterval = 5 * time.Minute
+)
+
 type jwksResolver struct {
-	url            string
-	keys           map[string]*rsa.PublicKey
-	mu             sync.RWMutex
-	refreshTimeout time.Duration
+	url             string
+	keys            map[string]*rsa.PublicKey
+	mu              sync.RWMutex
+	refreshTimeout  time.Duration
+	refreshInterval time.Duration
+	stopCh          chan struct{}
 }
 
 func (r *jwksResolver) KeyFunc(token *jwt.Token) (any, error) {
@@ -89,4 +96,30 @@ func (r *jwksResolver) refresh(timeout time.Duration) error {
 	r.mu.Unlock()
 
 	return nil
+}
+
+func (r *jwksResolver) start(log func(err error)) {
+	go func() {
+		ticker := time.NewTicker(r.refreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := r.refresh(r.refreshTimeout); err != nil {
+					log(err)
+				}
+			case <-r.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (r *jwksResolver) stop() {
+	select {
+	case <-r.stopCh:
+	default:
+		close(r.stopCh)
+	}
 }

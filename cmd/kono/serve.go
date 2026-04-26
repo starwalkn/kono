@@ -19,6 +19,14 @@ import (
 	"github.com/starwalkn/kono/internal/server"
 )
 
+const (
+	shutdownTimeout = 10 * time.Second
+
+	pprofReadTimeout  = 10 * time.Second
+	pprofWriteTimeout = 30 * time.Second
+	pprofIdleTimeout  = 60 * time.Second
+)
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Run HTTP server",
@@ -50,7 +58,10 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(cfg.Gateway, log)
+	srv, meterProvider, err := server.New(cfg.Gateway, log)
+	if err != nil {
+		return err
+	}
 
 	go func() {
 		if err = srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -65,11 +76,18 @@ func runServe() error {
 	<-ctx.Done()
 	log.Info("shutdown signal received")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:mnd // internal timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err = srv.Stop(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", zap.Error(err))
+	}
+
+	// If metrics exporter is prometheus, meterProvider will be nil
+	if meterProvider != nil {
+		if err = meterProvider.Shutdown(shutdownCtx); err != nil {
+			log.Error("metrics shutdown failed", zap.Error(err))
+		}
 	}
 
 	stopPprof(shutdownCtx)
@@ -112,8 +130,8 @@ func buildPprofServer(port int) *http.Server {
 	return &http.Server{
 		Addr:         fmt.Sprintf("localhost:%d", port),
 		Handler:      pprofMux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  pprofReadTimeout,
+		WriteTimeout: pprofWriteTimeout,
+		IdleTimeout:  pprofIdleTimeout,
 	}
 }

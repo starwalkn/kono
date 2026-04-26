@@ -264,8 +264,8 @@ func TestResolveQueries_ForwardParams_All(t *testing.T) {
 func TestFilterHeaders_Blacklist(t *testing.T) {
 	up := &httpUpstream{
 		cfg: upstreamConfig{
-			policy: Policy{
-				HeaderBlacklist: map[string]struct{}{
+			policy: upstreamPolicy{
+				headerBlacklist: map[string]struct{}{
 					"X-Secret": {},
 				},
 			},
@@ -289,7 +289,7 @@ func TestFilterHeaders_Blacklist(t *testing.T) {
 
 func TestFilterHeaders_EmptyBlacklist_ClonesAll(t *testing.T) {
 	up := &httpUpstream{
-		cfg: upstreamConfig{policy: Policy{}},
+		cfg: upstreamConfig{policy: upstreamPolicy{}},
 	}
 
 	headers := http.Header{
@@ -331,11 +331,11 @@ func TestClassifyDoError(t *testing.T) {
 
 	cases := []struct {
 		err  error
-		want UpstreamErrorKind
+		want upstreamErrorKind
 	}{
-		{context.DeadlineExceeded, UpstreamTimeout},
-		{context.Canceled, UpstreamCanceled},
-		{io.EOF, UpstreamConnection},
+		{context.DeadlineExceeded, upstreamTimeout},
+		{context.Canceled, upstreamCanceled},
+		{io.EOF, upstreamConnection},
 	}
 
 	for _, c := range cases {
@@ -350,21 +350,21 @@ func TestIsBreakerFailure(t *testing.T) {
 	up := &httpUpstream{}
 
 	cases := []struct {
-		kind UpstreamErrorKind
+		kind upstreamErrorKind
 		want bool
 	}{
-		{UpstreamTimeout, true},
-		{UpstreamConnection, true},
-		{UpstreamBadStatus, true},
-		{UpstreamCanceled, false},
-		{UpstreamBodyTooLarge, false},
-		{UpstreamReadError, false},
-		{UpstreamInternal, false},
-		{UpstreamCircuitOpen, false},
+		{upstreamTimeout, true},
+		{upstreamConnection, true},
+		{upstreamBadStatus, true},
+		{upstreamCanceled, false},
+		{upstreamBodyTooLarge, false},
+		{upstreamReadError, false},
+		{upstreamInternal, false},
+		{upstreamCircuitOpen, false},
 	}
 
 	for _, c := range cases {
-		got := up.isBreakerFailure(&UpstreamError{Kind: c.kind, Err: io.EOF})
+		got := up.isBreakerFailure(&upstreamError{kind: c.kind, err: io.EOF})
 		if got != c.want {
 			t.Errorf("isBreakerFailure(%q) = %v; want %v", c.kind, got, c.want)
 		}
@@ -436,13 +436,13 @@ func TestCall_Success(t *testing.T) {
 	defer server.Close()
 
 	up := newTestUpstream(server.URL)
-	resp := up.Call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
+	resp := up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	if resp.Err != nil {
-		t.Fatalf("unexpected error: %v", resp.Err)
+	if resp.err != nil {
+		t.Fatalf("unexpected error: %v", resp.err)
 	}
-	if string(resp.Body) != `{"ok":true}` {
-		t.Errorf("body = %q; want %q", resp.Body, `{"ok":true}`)
+	if string(resp.body) != `{"ok":true}` {
+		t.Errorf("body = %q; want %q", resp.body, `{"ok":true}`)
 	}
 }
 
@@ -452,13 +452,13 @@ func TestCall_ContextCanceledBeforeRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	resp := up.Call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
+	resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	if resp.Err == nil {
+	if resp.err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if resp.Err.Kind != UpstreamCanceled {
-		t.Errorf("kind = %q; want %q", resp.Err.Kind, UpstreamCanceled)
+	if resp.err.kind != upstreamCanceled {
+		t.Errorf("kind = %q; want %q", resp.err.kind, upstreamCanceled)
 	}
 }
 
@@ -471,24 +471,24 @@ func TestCall_ContextCanceledDuringBackoff(t *testing.T) {
 	}))
 	defer server.Close()
 
-	up := newTestUpstream(server.URL, withPolicy(Policy{
-		Retry: RetryPolicy{
-			MaxRetries:      5,
-			RetryOnStatuses: []int{http.StatusInternalServerError},
-			BackoffDelay:    500 * time.Millisecond,
+	up := newTestUpstream(server.URL, withPolicy(upstreamPolicy{
+		retry: retryPolicy{
+			maxRetries:      5,
+			retryOnStatuses: []int{http.StatusInternalServerError},
+			backoffDelay:    500 * time.Millisecond,
 		},
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	resp := up.Call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
+	resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	if resp.Err == nil {
+	if resp.err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if resp.Err.Kind != UpstreamCanceled {
-		t.Errorf("kind = %q; want %q", resp.Err.Kind, UpstreamCanceled)
+	if resp.err.kind != upstreamCanceled {
+		t.Errorf("kind = %q; want %q", resp.err.kind, upstreamCanceled)
 	}
 	if calls.Load() > 2 {
 		t.Errorf("too many upstream calls during backoff: %d", calls.Load())
@@ -508,7 +508,7 @@ func TestCall_CircuitBreaker_Integration(t *testing.T) {
 	up := newTestUpstream(server.URL, withCircuitBreaker(cb))
 
 	for range 4 {
-		up.Call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
+		up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
 	}
 
 	if calls.Load() != 2 {
@@ -534,20 +534,20 @@ func TestCall_CircuitBreaker_RecoversAfterReset(t *testing.T) {
 	up := newTestUpstream(server.URL, withCircuitBreaker(cb))
 	req := func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }
 
-	r1 := up.Call(context.Background(), req(), nil)
-	if r1.Err == nil || r1.Err.Kind != UpstreamBadStatus {
-		t.Fatalf("first call: expected bad_status, got %v", r1.Err)
+	r1 := up.call(context.Background(), req(), nil)
+	if r1.err == nil || r1.err.kind != upstreamBadStatus {
+		t.Fatalf("first call: expected bad_status, got %v", r1.err)
 	}
 
-	r2 := up.Call(context.Background(), req(), nil)
-	if r2.Err == nil || r2.Err.Kind != UpstreamCircuitOpen {
-		t.Fatalf("second call: expected circuit_open, got %v", r2.Err)
+	r2 := up.call(context.Background(), req(), nil)
+	if r2.err == nil || r2.err.kind != upstreamCircuitOpen {
+		t.Fatalf("second call: expected circuit_open, got %v", r2.err)
 	}
 
 	time.Sleep(resetTimeout + 20*time.Millisecond)
 
-	r3 := up.Call(context.Background(), req(), nil)
-	if r3.Err != nil {
-		t.Errorf("third call after reset: expected no error, got %v", r3.Err)
+	r3 := up.call(context.Background(), req(), nil)
+	if r3.err != nil {
+		t.Errorf("third call after reset: expected no error, got %v", r3.err)
 	}
 }

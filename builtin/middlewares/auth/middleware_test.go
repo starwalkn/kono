@@ -29,12 +29,12 @@ func makeHMACToken(t *testing.T, secret []byte, issuer, audience string, exp tim
 
 func TestAuthMiddleware_NoAuthHeader(t *testing.T) {
 	m := &Middleware{
-		Issuer:   "test-issuer",
-		Audience: "test-aud",
-		Resolver: &hmacResolver{HMACSecret: []byte("secret")},
-		JWTConfig: JWTConfig{
-			Alg:        "HS256",
-			HMACSecret: []byte("secret"),
+		issuer:   "test-issuer",
+		audience: "test-aud",
+		resolver: &hmacResolver{HMACSecret: []byte("secret")},
+		jwtConfig: jwtConfig{
+			alg:        "HS256",
+			hmacSecret: []byte("secret"),
 		},
 	}
 
@@ -54,12 +54,12 @@ func TestAuthMiddleware_NoAuthHeader(t *testing.T) {
 
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	m := &Middleware{
-		Issuer:   "test-issuer",
-		Audience: "test-aud",
-		Resolver: &hmacResolver{HMACSecret: []byte("secret")},
-		JWTConfig: JWTConfig{
-			Alg:        "HS256",
-			HMACSecret: []byte("secret"),
+		issuer:   "test-issuer",
+		audience: "test-aud",
+		resolver: &hmacResolver{HMACSecret: []byte("secret")},
+		jwtConfig: jwtConfig{
+			alg:        "HS256",
+			hmacSecret: []byte("secret"),
 		},
 	}
 
@@ -83,12 +83,12 @@ func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 	token := makeHMACToken(t, secret, "test-issuer", "test-aud", time.Now().Add(-time.Hour))
 
 	m := &Middleware{
-		Issuer:   "test-issuer",
-		Audience: "test-aud",
-		Resolver: &hmacResolver{HMACSecret: secret},
-		JWTConfig: JWTConfig{
-			Alg:        "HS256",
-			HMACSecret: secret,
+		issuer:   "test-issuer",
+		audience: "test-aud",
+		resolver: &hmacResolver{HMACSecret: secret},
+		jwtConfig: jwtConfig{
+			alg:        "HS256",
+			hmacSecret: secret,
 		},
 	}
 
@@ -112,12 +112,12 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	token := makeHMACToken(t, secret, "test-issuer", "test-aud", time.Now().Add(time.Hour))
 
 	m := &Middleware{
-		Issuer:   "test-issuer",
-		Audience: "test-aud",
-		Resolver: &hmacResolver{HMACSecret: secret},
-		JWTConfig: JWTConfig{
-			Alg:        "HS256",
-			HMACSecret: secret,
+		issuer:   "test-issuer",
+		audience: "test-aud",
+		resolver: &hmacResolver{HMACSecret: secret},
+		jwtConfig: jwtConfig{
+			alg:        "HS256",
+			hmacSecret: secret,
 		},
 	}
 

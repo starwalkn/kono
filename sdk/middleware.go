@@ -9,3 +9,7 @@ type Middleware interface {
 	Init(cfg map[string]interface{}) error
 	Handler(next http.Handler) http.Handler
 }
+
+type Closer interface {
+	Close() error
+}

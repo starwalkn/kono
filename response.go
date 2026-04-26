@@ -9,6 +9,12 @@ import (
 type ClientResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 	Errors []ClientError   `json:"errors,omitempty"`
+	Meta   ResponseMeta    `json:"meta,omitempty"`
+}
+
+type ResponseMeta struct {
+	RequestID string `json:"request_id,omitempty"`
+	Partial   bool   `json:"partial,omitempty"`
 }
 
 type ClientError string

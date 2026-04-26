@@ -8,20 +8,14 @@ A lightweight, modular, and high-performance <strong>API Gateway</strong> for mo
 Built with simplicity, performance, and developer-friendly configuration in mind.
 </p>
 
-<p align="center">
-  <a href="https://golang.org" style="text-decoration: none">
-    <img src="https://img.shields.io/badge/go-1.25.4-blue" alt="Go Version"/>
-  </a>
-  <a href="LICENSE" style="text-decoration: none">
-    <img src="https://img.shields.io/github/license/starwalkn/kono" alt="License"/>
-  </a>
-  <a href="https://goreportcard.com/report/github.com/starwalkn/kono" style="text-decoration: none">
-    <img src="https://goreportcard.com/badge/github.com/starwalkn/kono" alt="Go Report Card"/>
-  </a>
-  <a href="https://codecov.io/gh/starwalkn/kono" style="text-decoration: none">
-    <img src="https://codecov.io/gh/starwalkn/kono/branch/master/graph/badge.svg" alt="codecov"/>
-  </a>
-</p>
+[![Go Version](https://img.shields.io/badge/go-1.25.4-blue)](https://golang.org)
+[![License](https://img.shields.io/github/license/starwalkn/kono)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/starwalkn/kono)](https://goreportcard.com/report/github.com/starwalkn/kono)
+[![codecov](https://codecov.io/gh/starwalkn/kono/branch/master/graph/badge.svg)](https://codecov.io/gh/starwalkn/kono)
+![Docker Pulls](https://img.shields.io/docker/pulls/starwalkn/kono)
+![GitHub Created At](https://img.shields.io/github/created-at/starwalkn/kono)
+[![GitHub release](https://img.shields.io/github/v/release/starwalkn/kono)](https://github.com/starwalkn/kono/releases)
+[![GitHub stars](https://img.shields.io/github/stars/starwalkn/kono)](https://github.com/starwalkn/kono/stargazers)
 
 ---
 
@@ -30,7 +24,6 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 - 🚀 High-performance HTTP reverse proxy
 - 🔀 Request fan-out & response aggregation (merge, array, namespace)
 - 🧩 Dynamic `.so` plugin system (request & response phase)
-- 📜 Lua scripting via **Lumos** (LuaJIT over Unix socket)
 - 🔗 Path parameter extraction and forwarding
 - 🔁 Retry, circuit breaker & load balancing (round-robin, least-conns)
 - 📊 Prometheus metrics with circuit breaker state tracking

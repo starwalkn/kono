@@ -17,15 +17,15 @@ func newTestAggregator() *defaultAggregator {
 	return &defaultAggregator{}
 }
 
-func okResponse(body string) UpstreamResponse {
-	return UpstreamResponse{Body: []byte(body)}
+func okResponse(body string) upstreamResponse {
+	return upstreamResponse{body: []byte(body)}
 }
 
-func errResponse(kind UpstreamErrorKind) UpstreamResponse {
-	return UpstreamResponse{
-		Err: &UpstreamError{
-			Kind: kind,
-			Err:  fmt.Errorf("upstream error: %s", kind),
+func errResponse(kind upstreamErrorKind) upstreamResponse {
+	return upstreamResponse{
+		err: &upstreamError{
+			kind: kind,
+			err:  fmt.Errorf("upstream error: %s", kind),
 		},
 	}
 }
@@ -41,19 +41,18 @@ func jsonEqual(t *testing.T, expected string, actual []byte) {
 }
 
 type stubUpstream struct {
-	name string
+	upstreamName string
 }
 
-func (s *stubUpstream) Name() string   { return s.name }
-func (s *stubUpstream) Policy() Policy { return Policy{} }
-func (s *stubUpstream) Call(_ context.Context, _ *http.Request, _ []byte) *UpstreamResponse {
-	return &UpstreamResponse{}
+func (s *stubUpstream) name() string { return s.upstreamName }
+func (s *stubUpstream) call(_ context.Context, _ *http.Request, _ []byte) *upstreamResponse {
+	return &upstreamResponse{}
 }
 
-func stubUpstreams(names ...string) []Upstream {
-	upstreams := make([]Upstream, len(names))
+func stubUpstreams(names ...string) []upstream {
+	upstreams := make([]upstream, len(names))
 	for i, name := range names {
-		upstreams[i] = &stubUpstream{name: name}
+		upstreams[i] = &stubUpstream{upstreamName: name}
 	}
 	return upstreams
 }
@@ -63,14 +62,14 @@ func TestAggregate_SingleResponse_Success(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{okResponse(`{"a":1}`)},
-		Aggregation{Strategy: strategyArray},
+		[]upstreamResponse{okResponse(`{"a":1}`)},
+		aggregation{strategy: strategyArray},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	assert.False(t, result.Partial)
-	jsonEqual(t, `{"a":1}`, result.Data)
+	require.Empty(t, result.errors)
+	assert.False(t, result.partial)
+	jsonEqual(t, `{"a":1}`, result.data)
 }
 
 func TestAggregate_SingleResponse_UpstreamError(t *testing.T) {
@@ -78,15 +77,15 @@ func TestAggregate_SingleResponse_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{errResponse(UpstreamTimeout)},
-		Aggregation{Strategy: strategyArray},
+		[]upstreamResponse{errResponse(upstreamTimeout)},
+		aggregation{strategy: strategyArray},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.False(t, result.Partial)
-	require.Len(t, result.Errors, 1)
-	assert.Equal(t, ClientErrUpstreamUnavailable, result.Errors[0])
+	assert.Nil(t, result.data)
+	assert.False(t, result.partial)
+	require.Len(t, result.errors, 1)
+	assert.Equal(t, ClientErrUpstreamUnavailable, result.errors[0])
 }
 
 func TestAggregate_SingleResponse_NilBody(t *testing.T) {
@@ -94,14 +93,14 @@ func TestAggregate_SingleResponse_NilBody(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{{Body: nil}},
-		Aggregation{Strategy: strategyMerge},
+		[]upstreamResponse{{body: nil}},
+		aggregation{strategy: strategyMerge},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.Empty(t, result.Errors)
-	assert.False(t, result.Partial)
+	assert.Nil(t, result.data)
+	assert.Empty(t, result.errors)
+	assert.False(t, result.partial)
 }
 
 func TestAggregate_UnknownStrategy_ReturnsEmpty(t *testing.T) {
@@ -109,13 +108,13 @@ func TestAggregate_UnknownStrategy_ReturnsEmpty(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{okResponse(`{"a":1}`), okResponse(`{"b":2}`)},
-		Aggregation{Strategy: aggregationStrategy(255)},
+		[]upstreamResponse{okResponse(`{"a":1}`), okResponse(`{"b":2}`)},
+		aggregation{strategy: aggregationStrategy(255)},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.Empty(t, result.Errors)
+	assert.Nil(t, result.data)
+	assert.Empty(t, result.errors)
 }
 
 func TestMerge_Success_OverwriteConflict(t *testing.T) {
@@ -123,19 +122,19 @@ func TestMerge_Success_OverwriteConflict(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1,"b":2}`),
 			okResponse(`{"b":3,"c":4}`),
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			ConflictPolicy: conflictPolicyOverwrite,
+		aggregation{
+			strategy:       strategyMerge,
+			conflictPolicy: conflictPolicyOverwrite,
 		},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	jsonEqual(t, `{"a":1,"b":3,"c":4}`, result.Data)
+	require.Empty(t, result.errors)
+	jsonEqual(t, `{"a":1,"b":3,"c":4}`, result.data)
 }
 
 func TestMerge_ConflictPolicy_First(t *testing.T) {
@@ -143,19 +142,19 @@ func TestMerge_ConflictPolicy_First(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1,"b":2}`),
 			okResponse(`{"b":99,"c":4}`),
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			ConflictPolicy: conflictPolicyFirst,
+		aggregation{
+			strategy:       strategyMerge,
+			conflictPolicy: conflictPolicyFirst,
 		},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	jsonEqual(t, `{"a":1,"b":2,"c":4}`, result.Data)
+	require.Empty(t, result.errors)
+	jsonEqual(t, `{"a":1,"b":2,"c":4}`, result.data)
 }
 
 func TestMerge_ConflictPolicy_Error(t *testing.T) {
@@ -163,20 +162,20 @@ func TestMerge_ConflictPolicy_Error(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1,"b":2}`),
 			okResponse(`{"b":99,"c":4}`),
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			ConflictPolicy: conflictPolicyError,
+		aggregation{
+			strategy:       strategyMerge,
+			conflictPolicy: conflictPolicyError,
 		},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	require.Len(t, result.Errors, 1)
-	assert.Equal(t, ClientErrValueConflict, result.Errors[0])
+	assert.Nil(t, result.data)
+	require.Len(t, result.errors, 1)
+	assert.Equal(t, ClientErrValueConflict, result.errors[0])
 }
 
 func TestMerge_ConflictPolicy_Prefer_SecondUpstream(t *testing.T) {
@@ -184,20 +183,20 @@ func TestMerge_ConflictPolicy_Prefer_SecondUpstream(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1,"b":2}`),
 			okResponse(`{"b":99,"c":4}`),
 		},
-		Aggregation{
-			Strategy:          strategyMerge,
-			ConflictPolicy:    conflictPolicyPrefer,
-			PreferredUpstream: 1,
+		aggregation{
+			strategy:          strategyMerge,
+			conflictPolicy:    conflictPolicyPrefer,
+			preferredUpstream: 1,
 		},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	jsonEqual(t, `{"a":1,"b":99,"c":4}`, result.Data)
+	require.Empty(t, result.errors)
+	jsonEqual(t, `{"a":1,"b":99,"c":4}`, result.data)
 }
 
 func TestMerge_ConflictPolicy_Prefer_FirstUpstream(t *testing.T) {
@@ -205,20 +204,20 @@ func TestMerge_ConflictPolicy_Prefer_FirstUpstream(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1,"b":2}`),
 			okResponse(`{"b":99,"c":4}`),
 		},
-		Aggregation{
-			Strategy:          strategyMerge,
-			ConflictPolicy:    conflictPolicyPrefer,
-			PreferredUpstream: 0,
+		aggregation{
+			strategy:          strategyMerge,
+			conflictPolicy:    conflictPolicyPrefer,
+			preferredUpstream: 0,
 		},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	jsonEqual(t, `{"a":1,"b":2,"c":4}`, result.Data)
+	require.Empty(t, result.errors)
+	jsonEqual(t, `{"a":1,"b":2,"c":4}`, result.data)
 }
 
 func TestMerge_BestEffort_UpstreamError(t *testing.T) {
@@ -226,22 +225,22 @@ func TestMerge_BestEffort_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1}`),
-			errResponse(UpstreamTimeout),
+			errResponse(upstreamTimeout),
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			BestEffort:     true,
-			ConflictPolicy: conflictPolicyOverwrite,
+		aggregation{
+			strategy:       strategyMerge,
+			bestEffort:     true,
+			conflictPolicy: conflictPolicyOverwrite,
 		},
 		zap.NewNop(),
 	)
 
-	assert.True(t, result.Partial)
-	require.Len(t, result.Errors, 1)
-	assert.Equal(t, ClientErrUpstreamUnavailable, result.Errors[0])
-	jsonEqual(t, `{"a":1}`, result.Data)
+	assert.True(t, result.partial)
+	require.Len(t, result.errors, 1)
+	assert.Equal(t, ClientErrUpstreamUnavailable, result.errors[0])
+	jsonEqual(t, `{"a":1}`, result.data)
 }
 
 func TestMerge_BestEffort_MalformedJSON(t *testing.T) {
@@ -249,22 +248,22 @@ func TestMerge_BestEffort_MalformedJSON(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1}`),
-			{Body: []byte(`not json`)},
+			{body: []byte(`not json`)},
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			BestEffort:     true,
-			ConflictPolicy: conflictPolicyOverwrite,
+		aggregation{
+			strategy:       strategyMerge,
+			bestEffort:     true,
+			conflictPolicy: conflictPolicyOverwrite,
 		},
 		zap.NewNop(),
 	)
 
-	assert.True(t, result.Partial)
-	require.Len(t, result.Errors, 1)
-	assert.Equal(t, ClientErrUpstreamMalformed, result.Errors[0])
-	jsonEqual(t, `{"a":1}`, result.Data)
+	assert.True(t, result.partial)
+	require.Len(t, result.errors, 1)
+	assert.Equal(t, ClientErrUpstreamMalformed, result.errors[0])
+	jsonEqual(t, `{"a":1}`, result.data)
 }
 
 func TestMerge_NoBestEffort_UpstreamError(t *testing.T) {
@@ -272,21 +271,21 @@ func TestMerge_NoBestEffort_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1}`),
-			errResponse(UpstreamConnection),
+			errResponse(upstreamConnection),
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			BestEffort:     false,
-			ConflictPolicy: conflictPolicyOverwrite,
+		aggregation{
+			strategy:       strategyMerge,
+			bestEffort:     false,
+			conflictPolicy: conflictPolicyOverwrite,
 		},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.False(t, result.Partial)
-	require.NotEmpty(t, result.Errors)
+	assert.Nil(t, result.data)
+	assert.False(t, result.partial)
+	require.NotEmpty(t, result.errors)
 }
 
 func TestMerge_NoBestEffort_MalformedJSON(t *testing.T) {
@@ -294,20 +293,20 @@ func TestMerge_NoBestEffort_MalformedJSON(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"a":1}`),
-			{Body: []byte(`not json`)},
+			{body: []byte(`not json`)},
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			BestEffort:     false,
-			ConflictPolicy: conflictPolicyOverwrite,
+		aggregation{
+			strategy:       strategyMerge,
+			bestEffort:     false,
+			conflictPolicy: conflictPolicyOverwrite,
 		},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.False(t, result.Partial)
+	assert.Nil(t, result.data)
+	assert.False(t, result.partial)
 }
 
 func TestMerge_ErrorDeduplication(t *testing.T) {
@@ -315,19 +314,19 @@ func TestMerge_ErrorDeduplication(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
-			errResponse(UpstreamTimeout),
-			errResponse(UpstreamTimeout),
+		[]upstreamResponse{
+			errResponse(upstreamTimeout),
+			errResponse(upstreamTimeout),
 		},
-		Aggregation{
-			Strategy:       strategyMerge,
-			BestEffort:     true,
-			ConflictPolicy: conflictPolicyOverwrite,
+		aggregation{
+			strategy:       strategyMerge,
+			bestEffort:     true,
+			conflictPolicy: conflictPolicyOverwrite,
 		},
 		zap.NewNop(),
 	)
 
-	assert.Len(t, result.Errors, 1)
+	assert.Len(t, result.errors, 1)
 }
 
 func TestArray_Success(t *testing.T) {
@@ -335,17 +334,17 @@ func TestArray_Success(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"x":1}`),
 			okResponse(`{"y":2}`),
 		},
-		Aggregation{Strategy: strategyArray},
+		aggregation{strategy: strategyArray},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	assert.False(t, result.Partial)
-	jsonEqual(t, `[{"x":1},{"y":2}]`, result.Data)
+	require.Empty(t, result.errors)
+	assert.False(t, result.partial)
+	jsonEqual(t, `[{"x":1},{"y":2}]`, result.data)
 }
 
 func TestArray_BestEffort_UpstreamError(t *testing.T) {
@@ -353,18 +352,18 @@ func TestArray_BestEffort_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"x":1}`),
-			errResponse(UpstreamBadStatus),
+			errResponse(upstreamBadStatus),
 		},
-		Aggregation{Strategy: strategyArray, BestEffort: true},
+		aggregation{strategy: strategyArray, bestEffort: true},
 		zap.NewNop(),
 	)
 
-	assert.True(t, result.Partial)
-	require.Len(t, result.Errors, 1)
-	assert.Equal(t, ClientErrUpstreamError, result.Errors[0])
-	jsonEqual(t, `[{"x":1}]`, result.Data)
+	assert.True(t, result.partial)
+	require.Len(t, result.errors, 1)
+	assert.Equal(t, ClientErrUpstreamError, result.errors[0])
+	jsonEqual(t, `[{"x":1}]`, result.data)
 }
 
 func TestArray_NoBestEffort_UpstreamError(t *testing.T) {
@@ -372,17 +371,17 @@ func TestArray_NoBestEffort_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		nil,
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"x":1}`),
-			errResponse(UpstreamConnection),
+			errResponse(upstreamConnection),
 		},
-		Aggregation{Strategy: strategyArray, BestEffort: false},
+		aggregation{strategy: strategyArray, bestEffort: false},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.False(t, result.Partial)
-	require.NotEmpty(t, result.Errors)
+	assert.Nil(t, result.data)
+	assert.False(t, result.partial)
+	require.NotEmpty(t, result.errors)
 }
 
 func TestNamespace_Success(t *testing.T) {
@@ -390,16 +389,16 @@ func TestNamespace_Success(t *testing.T) {
 
 	result := agg.aggregate(
 		stubUpstreams("users", "orders"),
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"id":1}`),
 			okResponse(`{"total":99}`),
 		},
-		Aggregation{Strategy: strategyNamespace},
+		aggregation{strategy: strategyNamespace},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	jsonEqual(t, `{"users":{"id":1},"orders":{"total":99}}`, result.Data)
+	require.Empty(t, result.errors)
+	jsonEqual(t, `{"users":{"id":1},"orders":{"total":99}}`, result.data)
 }
 
 func TestNamespace_BestEffort_UpstreamError(t *testing.T) {
@@ -407,19 +406,19 @@ func TestNamespace_BestEffort_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		stubUpstreams("users", "orders"),
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"id":1}`),
-			errResponse(UpstreamTimeout),
+			errResponse(upstreamTimeout),
 		},
-		Aggregation{Strategy: strategyNamespace, BestEffort: true},
+		aggregation{strategy: strategyNamespace, bestEffort: true},
 		zap.NewNop(),
 	)
 
-	assert.True(t, result.Partial)
-	require.Len(t, result.Errors, 1)
+	assert.True(t, result.partial)
+	require.Len(t, result.errors, 1)
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(result.Data, &got))
+	require.NoError(t, json.Unmarshal(result.data, &got))
 	assert.Contains(t, got, "users")
 	assert.NotContains(t, got, "orders")
 }
@@ -429,17 +428,17 @@ func TestNamespace_NoBestEffort_UpstreamError(t *testing.T) {
 
 	result := agg.aggregate(
 		stubUpstreams("users", "orders"),
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"id":1}`),
-			errResponse(UpstreamConnection),
+			errResponse(upstreamConnection),
 		},
-		Aggregation{Strategy: strategyNamespace, BestEffort: false},
+		aggregation{strategy: strategyNamespace, bestEffort: false},
 		zap.NewNop(),
 	)
 
-	assert.Nil(t, result.Data)
-	assert.False(t, result.Partial)
-	require.NotEmpty(t, result.Errors)
+	assert.Nil(t, result.data)
+	assert.False(t, result.partial)
+	require.NotEmpty(t, result.errors)
 }
 
 func TestNamespace_NilBody_WritesNull(t *testing.T) {
@@ -447,38 +446,38 @@ func TestNamespace_NilBody_WritesNull(t *testing.T) {
 
 	result := agg.aggregate(
 		stubUpstreams("users", "orders"),
-		[]UpstreamResponse{
+		[]upstreamResponse{
 			okResponse(`{"id":1}`),
-			{Body: nil},
+			{body: nil},
 		},
-		Aggregation{Strategy: strategyNamespace},
+		aggregation{strategy: strategyNamespace},
 		zap.NewNop(),
 	)
 
-	require.Empty(t, result.Errors)
-	jsonEqual(t, `{"users":{"id":1},"orders":null}`, result.Data)
+	require.Empty(t, result.errors)
+	jsonEqual(t, `{"users":{"id":1},"orders":null}`, result.data)
 }
 
 func TestMapUpstreamError(t *testing.T) {
 	agg := newTestAggregator()
 
 	cases := []struct {
-		kind UpstreamErrorKind
+		kind upstreamErrorKind
 		want ClientError
 	}{
-		{UpstreamTimeout, ClientErrUpstreamUnavailable},
-		{UpstreamConnection, ClientErrUpstreamUnavailable},
-		{UpstreamBadStatus, ClientErrUpstreamError},
-		{UpstreamBodyTooLarge, ClientErrUpstreamBodyTooLarge},
-		{UpstreamInternal, ClientErrInternal},
-		{UpstreamReadError, ClientErrInternal},
+		{upstreamTimeout, ClientErrUpstreamUnavailable},
+		{upstreamConnection, ClientErrUpstreamUnavailable},
+		{upstreamBadStatus, ClientErrUpstreamError},
+		{upstreamBodyTooLarge, ClientErrUpstreamBodyTooLarge},
+		{upstreamInternal, ClientErrInternal},
+		{upstreamReadError, ClientErrInternal},
 	}
 
 	for _, tc := range cases {
 		t.Run(string(tc.kind), func(t *testing.T) {
-			got := agg.mapUpstreamError(&UpstreamError{
-				Kind: tc.kind,
-				Err:  errors.New("err"),
+			got := agg.mapUpstreamError(&upstreamError{
+				kind: tc.kind,
+				err:  errors.New("err"),
 			})
 			assert.Equal(t, tc.want, got)
 		})

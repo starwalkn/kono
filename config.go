@@ -10,58 +10,47 @@ import (
 	"strings"
 	"time"
 
+	"github.com/creasty/defaults"
 	"github.com/go-playground/validator/v10"
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	defaultUpstreamTimeout = 3 * time.Second
-	defaultServerTimeout   = 5 * time.Second
-)
+// parallelismMultiplier scales MaxParallelUpstreams relative to runtime.NumCPU()
+// when no explicit value is configured.
+const parallelismMultiplier = 2
 
 type Config struct {
 	Schema  string        `yaml:"schema" validate:"required,oneof=v1"`
 	Debug   bool          `yaml:"debug"`
-	Lumos   LumosConfig   `yaml:"lumos"`
 	Gateway GatewayConfig `yaml:"gateway" validate:"required"`
 }
 
-type LumosConfig struct {
-	Enabled       bool          `yaml:"enabled"`
-	SocketPath    string        `yaml:"socket_path"`
-	ReadDeadline  time.Duration `yaml:"read_deadline"`
-	WriteDeadline time.Duration `yaml:"write_deadline"`
-	MsgMaxSize    int           `yaml:"msg_max_size"`
-}
-
 type GatewayConfig struct {
-	Server  ServerConfig  `yaml:"server" validate:"required"`
+	Server  ServerConfig  `yaml:"server"  validate:"required"`
 	Routing RoutingConfig `yaml:"routing" validate:"required"`
 }
 
 type ServerConfig struct {
-	Port    int           `yaml:"port" validate:"required,min=1,max=65535"`
-	Timeout time.Duration `yaml:"timeout"`
+	Port    int           `yaml:"port"    validate:"required,min=1,max=65535"`
+	Timeout time.Duration `yaml:"timeout" default:"5s"`
 	Pprof   PprofConfig   `yaml:"pprof"`
 	Metrics MetricsConfig `yaml:"metrics"`
 }
 
 type PprofConfig struct {
 	Enabled bool `yaml:"enabled"`
-	Port    int  `yaml:"port" validate:"min=1,max=65535"`
+	Port    int  `yaml:"port" validate:"required_if=Enabled true,omitempty,min=1,max=65535"`
 }
 
 type MetricsConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Provider string `yaml:"provider"`
-
-	VictoriaMetrics VictoriaMetricsConfig `yaml:"victoria_metrics"`
+	Enabled  bool       `yaml:"enabled"`
+	Exporter string     `yaml:"exporter"`
+	OTLP     OTLPConfig `yaml:"otlp"`
 }
 
-type VictoriaMetricsConfig struct {
-	Host     string        `yaml:"host"`
-	Port     int           `yaml:"port"`
-	Path     string        `yaml:"path"`
+type OTLPConfig struct {
+	Endpoint string        `yaml:"endpoint"`
+	Insecure bool          `yaml:"insecure"`
 	Interval time.Duration `yaml:"interval"`
 }
 
@@ -77,68 +66,74 @@ type RateLimiterConfig struct {
 }
 
 type FlowConfig struct {
-	Path                 string             `yaml:"path" validate:"required,startswith=/"`
-	Method               string             `yaml:"method" validate:"required,oneof=GET POST PUT PATCH DELETE HEAD OPTIONS"`
-	Aggregation          AggregationConfig  `yaml:"aggregation" validate:"required"`
-	MaxParallelUpstreams int64              `yaml:"max_parallel_upstreams"`
-	Upstreams            []UpstreamConfig   `yaml:"upstreams" validate:"required,min=1,dive,required"`
-	Plugins              []PluginConfig     `yaml:"plugins" validate:"omitempty,dive"`
-	Middlewares          []MiddlewareConfig `yaml:"middlewares" validate:"omitempty,dive"`
+	Path        string `yaml:"path"   validate:"required,startswith=/"`
+	Method      string `yaml:"method" validate:"required,oneof=GET POST PUT PATCH DELETE HEAD OPTIONS"`
+	Passthrough bool   `yaml:"passthrough"`
+
+	// MaxParallelUpstreams defaults to 2×NumCPU when unset or zero.
+	MaxParallelUpstreams int64 `yaml:"max_parallel_upstreams"`
+
+	Aggregation *AggregationConfig `yaml:"aggregation"  validate:"required_if=Passthrough false"`
+	Upstreams   []UpstreamConfig   `yaml:"upstreams"    validate:"required,min=1,dive,required"`
+	Plugins     []PluginConfig     `yaml:"plugins"      validate:"omitempty,dive"`
+	Middlewares []MiddlewareConfig `yaml:"middlewares"  validate:"omitempty,dive"`
 }
 
 type AggregationConfig struct {
 	BestEffort bool              `yaml:"best_effort"`
-	Strategy   string            `yaml:"strategy" validate:"required,oneof=array merge namespace"`
+	Strategy   string            `yaml:"strategy"    validate:"required,oneof=array merge namespace"`
 	OnConflict *OnConflictConfig `yaml:"on_conflict" validate:"required_if=Strategy merge"`
 }
 
 type OnConflictConfig struct {
-	Policy   string `yaml:"policy" validate:"oneof=overwrite error first prefer"`
+	Policy   string `yaml:"policy"          validate:"oneof=overwrite error first prefer"`
 	Upstream string `yaml:"prefer_upstream" validate:"required_if=Policy prefer"`
 }
 
 type UpstreamConfig struct {
-	Name           string          `yaml:"name" validate:"required"`
-	Hosts          AddrList        `yaml:"hosts" validate:"min=1,dive"`
-	Path           string          `yaml:"path"`
-	Method         string          `yaml:"method"`
-	Timeout        time.Duration   `yaml:"timeout"`
-	ForwardHeaders []string        `yaml:"forward_headers"`
-	ForwardQueries []string        `yaml:"forward_queries"`
-	ForwardParams  []string        `yaml:"forward_params"`
-	Policy         PolicyConfig    `yaml:"policy"`
-	Transport      TransportConfig `yaml:"transport"`
+	Name    string        `yaml:"name" validate:"required"`
+	Hosts   AddrList      `yaml:"hosts" validate:"min=1,dive"`
+	Path    string        `yaml:"path"`
+	Method  string        `yaml:"method"`
+	Timeout time.Duration `yaml:"timeout" default:"3s"`
+
+	ForwardHeaders []string `yaml:"forward_headers"`
+	ForwardQueries []string `yaml:"forward_queries"`
+	ForwardParams  []string `yaml:"forward_params"`
+
+	Policy    PolicyConfig    `yaml:"policy"`
+	Transport TransportConfig `yaml:"transport"`
 }
 
 type TransportConfig struct {
-	MaxIdleConns        int           `yaml:"max_idle_conns"`
-	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"`
-	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`
+	MaxIdleConns        int           `yaml:"max_idle_conns"         default:"100"`
+	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host" default:"50"`
+	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"      default:"90s"`
 }
 
 type PluginConfig struct {
-	Name   string                 `yaml:"name" validate:"required"`
+	Name   string                 `yaml:"name"   validate:"required"`
 	Source string                 `yaml:"source" validate:"required,oneof=builtin file"`
-	Path   string                 `yaml:"path" validate:"required_if=Source file"`
+	Path   string                 `yaml:"path"   validate:"required_if=Source file"`
 	Config map[string]interface{} `yaml:"config"`
 }
 
 type MiddlewareConfig struct {
-	Name   string                 `yaml:"name" validate:"required"`
+	Name   string                 `yaml:"name"   validate:"required"`
 	Source string                 `yaml:"source" validate:"required,oneof=builtin file"`
-	Path   string                 `yaml:"path" validate:"required_if=Source file,omitempty"`
+	Path   string                 `yaml:"path"   validate:"required_if=Source file,omitempty"`
 	Config map[string]interface{} `yaml:"config"`
 }
 
 type PolicyConfig struct {
 	HeaderBlacklist     []string `yaml:"header_blacklist"`
-	AllowedStatuses     []int    `yaml:"allowed_status_codes"`
-	RequireBody         bool     `yaml:"allow_empty_body"`
+	AllowedStatuses     []int    `yaml:"allowed_statuses"`
+	RequireBody         bool     `yaml:"require_body"`
 	MaxResponseBodySize int64    `yaml:"max_response_body_size"`
 
 	RetryConfig          RetryConfig          `yaml:"retry"`
 	CircuitBreakerConfig CircuitBreakerConfig `yaml:"circuit_breaker"`
-	LoadBalancingConfig  LoadBalancingConfig  `yaml:"load_balancer"`
+	LoadBalancingConfig  LoadBalancingConfig  `yaml:"load_balancing"`
 }
 
 type RetryConfig struct {
@@ -179,11 +174,14 @@ func (a *AddrList) UnmarshalYAML(value *yaml.Node) error {
 		*a = addrs
 
 		return nil
+	case yaml.DocumentNode, yaml.MappingNode, yaml.AliasNode:
+		return fmt.Errorf("expects a string or sequence, got %v", value.Kind)
 	default:
-		return fmt.Errorf("unexpected YAML node kind for AddrList: %v", value.Kind)
+		return fmt.Errorf("unexpected yaml node kind for AddrList: %v", value.Kind)
 	}
 }
 
+// LoadConfig reads, parses, applies defaults, validates, and returns the config.
 func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -196,8 +194,37 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("cannot parse configuration file: %w", err)
 	}
 
-	ensureGatewayDefaults(&cfg.Gateway)
+	if err = defaults.Set(&cfg); err != nil {
+		return Config{}, fmt.Errorf("cannot apply configuration defaults: %w", err)
+	}
 
+	applyDynamicDefaults(&cfg)
+
+	v := newValidator()
+
+	if err = v.Struct(&cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid configuration:\n%w", formatValidationError(err))
+	}
+
+	if err = validatePathParams(cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid path params configuration: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// applyDynamicDefaults sets defaults that cannot be expressed as static tag values
+// because they depend on runtime state (e.g. NumCPU).
+func applyDynamicDefaults(cfg *Config) {
+	for i := range cfg.Gateway.Routing.Flows {
+		f := &cfg.Gateway.Routing.Flows[i]
+		if f.MaxParallelUpstreams < 1 {
+			f.MaxParallelUpstreams = int64(parallelismMultiplier * runtime.NumCPU())
+		}
+	}
+}
+
+func newValidator() *validator.Validate {
 	v := validator.New()
 
 	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
@@ -209,47 +236,18 @@ func LoadConfig(path string) (Config, error) {
 		return strings.ToLower(strings.Split(name, ",")[0])
 	})
 
-	if err = v.Struct(&cfg); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: \n%w", formatValidationError(err))
-	}
-
-	if err = validatePathParams(cfg); err != nil {
-		return Config{}, fmt.Errorf("invalid path params configuration: %w", err)
-	}
-
-	return cfg, nil
+	return v
 }
 
+var pathParamPattern = regexp.MustCompile(`\{([^}]+)\}`)
+
 func validatePathParams(cfg Config) error {
-	paramRegexp := regexp.MustCompile(`\{([^}]+)\}`)
+	for _, f := range cfg.Gateway.Routing.Flows {
+		flowParams := extractPathParams(f.Path)
 
-	for _, flow := range cfg.Gateway.Routing.Flows {
-		flowParams := make(map[string]struct{})
-		for _, match := range paramRegexp.FindAllStringSubmatch(flow.Path, -1) {
-			flowParams[match[1]] = struct{}{}
-		}
-
-		for _, upstream := range flow.Upstreams {
-			for _, match := range paramRegexp.FindAllStringSubmatch(upstream.Path, -1) {
-				param := match[1]
-				if _, ok := flowParams[param]; !ok {
-					return fmt.Errorf(
-						"upstream '%s': path param '{%s}' not declared in flow path '%s'",
-						upstream.Name, param, flow.Path,
-					)
-				}
-			}
-
-			for _, param := range upstream.ForwardParams {
-				if param == "*" {
-					continue
-				}
-				if _, ok := flowParams[param]; !ok {
-					return fmt.Errorf(
-						"upstream '%s': forward_param '%s' not declared in flow path '%s'",
-						upstream.Name, param, flow.Path,
-					)
-				}
+		for _, u := range f.Upstreams {
+			if err := validateUpstreamParams(u, flowParams, f.Path); err != nil {
+				return err
 			}
 		}
 	}
@@ -257,73 +255,68 @@ func validatePathParams(cfg Config) error {
 	return nil
 }
 
-// ensureGatewayDefaults ensures that default values are used in required configuration fields if they are not explicitly set.
-func ensureGatewayDefaults(cfg *GatewayConfig) {
-	if cfg.Server.Timeout == 0 {
-		cfg.Server.Timeout = defaultServerTimeout
+func extractPathParams(path string) map[string]struct{} {
+	params := make(map[string]struct{})
+
+	for _, match := range pathParamPattern.FindAllStringSubmatch(path, -1) {
+		params[match[1]] = struct{}{}
 	}
 
-	for i := range cfg.Routing.Flows {
-		if cfg.Routing.Flows[i].MaxParallelUpstreams < 1 {
-			cfg.Routing.Flows[i].MaxParallelUpstreams = int64(2 * runtime.NumCPU()) //nolint:mnd // shut up mnt
-		}
+	return params
+}
 
-		for j := range cfg.Routing.Flows[i].Upstreams {
-			if cfg.Routing.Flows[i].Upstreams[j].Timeout == 0 {
-				cfg.Routing.Flows[i].Upstreams[j].Timeout = defaultUpstreamTimeout
-			}
-
-			if cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConns == 0 {
-				cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConns = 100
-			}
-
-			if cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConnsPerHost == 0 {
-				cfg.Routing.Flows[i].Upstreams[j].Transport.MaxIdleConnsPerHost = 50
-			}
-
-			if cfg.Routing.Flows[i].Upstreams[j].Transport.IdleConnTimeout == 0 {
-				cfg.Routing.Flows[i].Upstreams[j].Transport.IdleConnTimeout = 90 * time.Second
-			}
+func validateUpstreamParams(u UpstreamConfig, flowParams map[string]struct{}, flowPath string) error {
+	for _, match := range pathParamPattern.FindAllStringSubmatch(u.Path, -1) {
+		if _, ok := flowParams[match[1]]; !ok {
+			return fmt.Errorf(
+				"upstream %q: path param '{%s}' not declared in flow path %q",
+				u.Name, match[1], flowPath,
+			)
 		}
 	}
+
+	for _, param := range u.ForwardParams {
+		if param == "*" {
+			continue
+		}
+
+		if _, ok := flowParams[param]; !ok {
+			return fmt.Errorf(
+				"upstream %q: forward_param %q not declared in flow path %q",
+				u.Name, param, flowPath,
+			)
+		}
+	}
+
+	return nil
 }
 
 func formatValidationError(err error) error {
 	var ves validator.ValidationErrors
-
-	if ok := errors.As(err, &ves); !ok {
+	if !errors.As(err, &ves) {
 		return err
 	}
 
-	var messages []string
+	messages := make([]string, 0, len(ves))
 
 	for _, fe := range ves {
 		path := strings.TrimPrefix(fe.Namespace(), "Config.")
-
-		messages = append(messages, fmt.Sprintf(
-			"  %s: %s",
-			path,
-			humanMessage(fe),
-		))
+		messages = append(messages, fmt.Sprintf("  %s: %s", path, validationMessage(fe)))
 	}
 
 	return errors.New(strings.Join(messages, "\n"))
 }
 
-func humanMessage(fe validator.FieldError) string {
+func validationMessage(fe validator.FieldError) string {
 	switch fe.Tag() {
 	case "required":
 		return "field is required"
-
 	case "min":
 		return fmt.Sprintf("must have at least %s item(s)", fe.Param())
-
 	case "oneof":
 		return fmt.Sprintf("must be one of [%s]", fe.Param())
-
 	case "hosts":
 		return "must be a valid URL"
-
 	case "required_if":
 		if fe.Field() == "path" {
 			return "is required when source is 'file'"
@@ -331,6 +324,6 @@ func humanMessage(fe validator.FieldError) string {
 
 		return fe.Error()
 	default:
-		return fmt.Sprintf("validation failed on '%s'", fe.Tag())
+		return fmt.Sprintf("validation failed on %q", fe.Tag())
 	}
 }
