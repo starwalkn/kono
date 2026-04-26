@@ -6,7 +6,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/creasty/defaults v1.8.0
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/go-playground/validator/v10 v10.30.1
+	github.com/go-playground/validator/v10 v10.30.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/jwx v1.2.31
@@ -37,7 +37,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
