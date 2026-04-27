@@ -8,12 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
-	"slices"
-	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/metric"
@@ -38,9 +37,7 @@ func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
 	t.Helper()
 
 	var resp ClientResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("invalid JSON response: %v\nbody=%s", err, body)
-	}
+	require.NoError(t, json.Unmarshal(body, &resp), "invalid JSON response: %s", body)
 
 	return resp
 }
@@ -130,30 +127,16 @@ func TestRouter_ServeHTTP_BasicFlow(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", res.StatusCode)
-	}
-
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("unexpected Content-Type: %s", ct)
-	}
-
 	body, _ := io.ReadAll(res.Body)
-
 	resp := decodeJSONResponse(t, body)
 
-	if len(resp.Errors) != 0 {
-		t.Fatalf("expected no errors, got %d", len(resp.Errors))
-	}
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
+	assert.Empty(t, resp.Errors)
 
 	var got []string
-	if err := json.Unmarshal(resp.Data, &got); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(got) != 2 || !slices.Contains(got, "A") || !slices.Contains(got, "B") {
-		t.Fatalf("unexpected data: %v", got)
-	}
+	require.NoError(t, json.Unmarshal(resp.Data, &got))
+	assert.ElementsMatch(t, []string{"A", "B"}, got)
 }
 
 func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
@@ -188,34 +171,17 @@ func TestRouter_ServeHTTP_PartialResponse(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusPartialContent {
-		t.Fatalf("expected 206, got %d", res.StatusCode)
-	}
-
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("unexpected Content-Type: %s", ct)
-	}
-
 	body, _ := io.ReadAll(res.Body)
-
 	resp := decodeJSONResponse(t, body)
 
-	if len(resp.Errors) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
-	}
-
-	if resp.Errors[0] != ClientErrUpstreamUnavailable {
-		t.Fatalf("unexpected error code: %s", resp.Errors[0])
-	}
+	require.Equal(t, http.StatusPartialContent, res.StatusCode)
+	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
+	require.Len(t, resp.Errors, 1)
+	assert.Equal(t, ClientErrUpstreamUnavailable, resp.Errors[0])
 
 	var got []string
-	if err := json.Unmarshal(resp.Data, &got); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(got) != 1 || !slices.Contains(got, "A") {
-		t.Fatalf("unexpected data: %v", got)
-	}
+	require.NoError(t, json.Unmarshal(resp.Data, &got))
+	assert.Equal(t, []string{"A"}, got)
 }
 
 func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
@@ -250,29 +216,14 @@ func TestRouter_ServeHTTP_UpstreamError(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d", res.StatusCode)
-	}
-
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("unexpected Content-Type: %s", ct)
-	}
-
 	body, _ := io.ReadAll(res.Body)
-
 	resp := decodeJSONResponse(t, body)
 
-	if resp.Data != nil {
-		t.Fatalf("unexpected data: %v", resp.Data)
-	}
-
-	if len(resp.Errors) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(resp.Errors))
-	}
-
-	if resp.Errors[0] != ClientErrUpstreamUnavailable {
-		t.Fatalf("unexpected error code: %s", resp.Errors[0])
-	}
+	require.Equal(t, http.StatusBadGateway, res.StatusCode)
+	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
+	assert.Nil(t, resp.Data)
+	require.Len(t, resp.Errors, 1)
+	assert.Equal(t, ClientErrUpstreamUnavailable, resp.Errors[0])
 }
 
 func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
@@ -282,7 +233,7 @@ func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
 				status: http.StatusInternalServerError,
 				body:   nil,
 				err: &upstreamError{
-					kind: "unknown_error_kind", // will be mapped to InternalError
+					kind: "unknown_error_kind",
 					err:  errors.New("upstream unknown_error_kind"),
 				},
 			},
@@ -318,25 +269,13 @@ func TestRouter_ServeHTTP_UpstreamErrorPriority(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d", res.StatusCode)
-	}
-
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("unexpected Content-Type: %s", ct)
-	}
-
 	body, _ := io.ReadAll(res.Body)
-
 	resp := decodeJSONResponse(t, body)
 
-	if resp.Data != nil {
-		t.Fatalf("unexpected data: %v", resp.Data)
-	}
-
-	if len(resp.Errors) != 2 {
-		t.Fatalf("expected 2 error, got %d", len(resp.Errors))
-	}
+	require.Equal(t, http.StatusBadGateway, res.StatusCode)
+	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
+	assert.Nil(t, resp.Data)
+	assert.Len(t, resp.Errors, 2)
 }
 
 func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
@@ -350,9 +289,7 @@ func TestRouter_ServeHTTP_NoRoute(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", res.StatusCode)
-	}
+	assert.Equal(t, http.StatusNotFound, res.StatusCode)
 }
 
 func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
@@ -403,33 +340,15 @@ func TestRouter_ServeHTTP_WithPlugins(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", res.StatusCode)
-	}
-
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("unexpected Content-Type: %s", ct)
-	}
-
 	body, _ := io.ReadAll(res.Body)
-
 	resp := decodeJSONResponse(t, body)
 
-	if len(resp.Errors) != 0 {
-		t.Fatalf("expected no errors, got %d", len(resp.Errors))
-	}
-
-	if string(resp.Data) != `"OK"` {
-		t.Errorf("expected body OK, got %q", resp.Data)
-	}
-
-	if res.Header.Get("X-Plugin") != "done" {
-		t.Errorf("response plugin not executed")
-	}
-
-	if !reflect.DeepEqual(executed, []string{"req", "resp"}) {
-		t.Errorf("unexpected plugin order: %v", executed)
-	}
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
+	assert.Empty(t, resp.Errors)
+	assert.Equal(t, `"OK"`, string(resp.Data))
+	assert.Equal(t, "done", res.Header.Get("X-Plugin"))
+	assert.Equal(t, []string{"req", "resp"}, executed)
 }
 
 func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
@@ -457,15 +376,7 @@ func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", res.StatusCode)
-	}
-
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("unexpected Content-Type: %s", ct)
-	}
-
-	if got := res.Header.Get("X-Middleware"); got != "ok" {
-		t.Errorf("middleware not executed, header=%q", got)
-	}
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
+	assert.Equal(t, "ok", res.Header.Get("X-Middleware"))
 }

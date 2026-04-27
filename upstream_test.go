@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
@@ -51,22 +53,14 @@ func TestResolveHeaders_UntrustedProxy_HTTP(t *testing.T) {
 	orig.RemoteAddr = "1.2.3.4:12345"
 	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	if err := up.resolveHeaders(target, orig); err != nil {
-		t.Fatalf("resolveHeaders error: %v", err)
-	}
+	err := up.resolveHeaders(target, orig)
 
-	cases := []struct{ header, want string }{
-		{"X-Forwarded-For", "1.2.3.4"},
-		{"X-Forwarded-Proto", "http"},
-		{"X-Forwarded-Host", "example.com"},
-		{"X-Forwarded-Port", "80"},
-		{"Forwarded", "for=1.2.3.4; proto=http; host=example.com"},
-	}
-	for _, c := range cases {
-		if got := target.Header.Get(c.header); got != c.want {
-			t.Errorf("%s = %q; want %q", c.header, got, c.want)
-		}
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "1.2.3.4", target.Header.Get("X-Forwarded-For"))
+	assert.Equal(t, "http", target.Header.Get("X-Forwarded-Proto"))
+	assert.Equal(t, "example.com", target.Header.Get("X-Forwarded-Host"))
+	assert.Equal(t, "80", target.Header.Get("X-Forwarded-Port"))
+	assert.Equal(t, "for=1.2.3.4; proto=http; host=example.com", target.Header.Get("Forwarded"))
 }
 
 func TestResolveHeaders_UntrustedProxy_TLS(t *testing.T) {
@@ -77,25 +71,16 @@ func TestResolveHeaders_UntrustedProxy_TLS(t *testing.T) {
 	orig.TLS = &tls.ConnectionState{}
 	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	if err := up.resolveHeaders(target, orig); err != nil {
-		t.Fatalf("resolveHeaders error: %v", err)
-	}
+	err := up.resolveHeaders(target, orig)
 
-	cases := []struct{ header, want string }{
-		{"X-Forwarded-For", "1.2.3.4"},
-		{"X-Forwarded-Proto", "https"},
-		{"X-Forwarded-Host", "example.com:8443"},
-		{"X-Forwarded-Port", "8443"},
-		{"Forwarded", "for=1.2.3.4; proto=https; host=example.com:8443"},
-	}
-	for _, c := range cases {
-		if got := target.Header.Get(c.header); got != c.want {
-			t.Errorf("%s = %q; want %q", c.header, got, c.want)
-		}
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "1.2.3.4", target.Header.Get("X-Forwarded-For"))
+	assert.Equal(t, "https", target.Header.Get("X-Forwarded-Proto"))
+	assert.Equal(t, "example.com:8443", target.Header.Get("X-Forwarded-Host"))
+	assert.Equal(t, "8443", target.Header.Get("X-Forwarded-Port"))
+	assert.Equal(t, "for=1.2.3.4; proto=https; host=example.com:8443", target.Header.Get("Forwarded"))
 }
 
-// requestWithClientIP needed: incoming XFF must be ignored, real IP must come from context.
 func TestResolveHeaders_UntrustedProxy_IgnoresIncomingXFF(t *testing.T) {
 	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
 
@@ -103,16 +88,12 @@ func TestResolveHeaders_UntrustedProxy_IgnoresIncomingXFF(t *testing.T) {
 	orig.Header.Set("X-Forwarded-For", "192.168.99.1")
 	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	if err := up.resolveHeaders(target, orig); err != nil {
-		t.Fatalf("resolveHeaders error: %v", err)
-	}
+	err := up.resolveHeaders(target, orig)
 
-	if got := target.Header.Get("X-Forwarded-For"); got != "1.2.3.4" {
-		t.Errorf("X-Forwarded-For = %q; want %q (spoofed XFF must be ignored for untrusted proxy)", got, "1.2.3.4")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "1.2.3.4", target.Header.Get("X-Forwarded-For"))
 }
 
-// requestWithClientIP needed: trusted proxy must append to XFF using real IP from context, not re-read XFF.
 func TestResolveHeaders_TrustedProxy_AppendXFF(t *testing.T) {
 	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
 
@@ -123,22 +104,14 @@ func TestResolveHeaders_TrustedProxy_AppendXFF(t *testing.T) {
 	orig.Header.Set("X-Forwarded-Port", "80")
 	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	if err := up.resolveHeaders(target, orig); err != nil {
-		t.Fatalf("resolveHeaders error: %v", err)
-	}
+	err := up.resolveHeaders(target, orig)
 
-	cases := []struct{ header, want string }{
-		{"X-Forwarded-For", "5.6.7.8, 10.0.1.5"},
-		{"X-Forwarded-Proto", "http"},
-		{"X-Forwarded-Host", "example.com"},
-		{"X-Forwarded-Port", "80"},
-		{"Forwarded", "for=10.0.1.5; proto=http; host=example.com"},
-	}
-	for _, c := range cases {
-		if got := target.Header.Get(c.header); got != c.want {
-			t.Errorf("%s = %q; want %q", c.header, got, c.want)
-		}
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "5.6.7.8, 10.0.1.5", target.Header.Get("X-Forwarded-For"))
+	assert.Equal(t, "http", target.Header.Get("X-Forwarded-Proto"))
+	assert.Equal(t, "example.com", target.Header.Get("X-Forwarded-Host"))
+	assert.Equal(t, "80", target.Header.Get("X-Forwarded-Port"))
+	assert.Equal(t, "for=10.0.1.5; proto=http; host=example.com", target.Header.Get("Forwarded"))
 }
 
 func TestResolveHeaders_TrustedProxy_InvalidProtoFallback(t *testing.T) {
@@ -149,13 +122,10 @@ func TestResolveHeaders_TrustedProxy_InvalidProtoFallback(t *testing.T) {
 	orig.Header.Set("X-Forwarded-Proto", "ftp")
 	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	if err := up.resolveHeaders(target, orig); err != nil {
-		t.Fatalf("resolveHeaders error: %v", err)
-	}
+	err := up.resolveHeaders(target, orig)
 
-	if got := target.Header.Get("X-Forwarded-Proto"); got != "http" {
-		t.Errorf("X-Forwarded-Proto = %q; want %q (invalid proto must fall back to derived)", got, "http")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "http", target.Header.Get("X-Forwarded-Proto"))
 }
 
 func TestResolveHeaders_TrustedProxy_InvalidPort_UsesDefault(t *testing.T) {
@@ -166,13 +136,10 @@ func TestResolveHeaders_TrustedProxy_InvalidPort_UsesDefault(t *testing.T) {
 	orig.Header.Set("X-Forwarded-Port", "99999")
 	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	if err := up.resolveHeaders(target, orig); err != nil {
-		t.Fatalf("resolveHeaders error: %v", err)
-	}
+	err := up.resolveHeaders(target, orig)
 
-	if got := target.Header.Get("X-Forwarded-Port"); got != "80" {
-		t.Errorf("X-Forwarded-Port = %q; want %q (invalid port must fall back to default)", got, "80")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "80", target.Header.Get("X-Forwarded-Port"))
 }
 
 func TestResolveQueries_ForwardSpecific(t *testing.T) {
@@ -186,15 +153,9 @@ func TestResolveQueries_ForwardSpecific(t *testing.T) {
 	up.resolveQueries(target, original)
 
 	q := target.URL.Query()
-	if q.Get("foo") != "1" {
-		t.Errorf("foo = %q; want %q", q.Get("foo"), "1")
-	}
-	if q.Get("bar") != "2" {
-		t.Errorf("bar = %q; want %q", q.Get("bar"), "2")
-	}
-	if q.Has("baz") {
-		t.Errorf("baz should not be forwarded")
-	}
+	assert.Equal(t, "1", q.Get("foo"))
+	assert.Equal(t, "2", q.Get("bar"))
+	assert.False(t, q.Has("baz"))
 }
 
 func TestResolveQueries_ForwardAll(t *testing.T) {
@@ -208,9 +169,8 @@ func TestResolveQueries_ForwardAll(t *testing.T) {
 	up.resolveQueries(target, original)
 
 	q := target.URL.Query()
-	if q.Get("a") != "1" || q.Get("b") != "2" {
-		t.Errorf("all query params should be forwarded, got %v", q)
-	}
+	assert.Equal(t, "1", q.Get("a"))
+	assert.Equal(t, "2", q.Get("b"))
 }
 
 func TestResolveQueries_ForwardParams_Specific(t *testing.T) {
@@ -224,18 +184,13 @@ func TestResolveQueries_ForwardParams_Specific(t *testing.T) {
 
 	original, _ := http.NewRequest(http.MethodGet, "http://example.com/users/42/orders/99", nil)
 	original = original.WithContext(context.WithValue(original.Context(), chi.RouteCtxKey, rctx))
-
 	target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
 
 	up.resolveQueries(target, original)
 
 	q := target.URL.Query()
-	if q.Get("user_id") != "42" {
-		t.Errorf("user_id = %q; want %q", q.Get("user_id"), "42")
-	}
-	if q.Has("order_id") {
-		t.Errorf("order_id should not be forwarded")
-	}
+	assert.Equal(t, "42", q.Get("user_id"))
+	assert.False(t, q.Has("order_id"))
 }
 
 func TestResolveQueries_ForwardParams_All(t *testing.T) {
@@ -249,15 +204,13 @@ func TestResolveQueries_ForwardParams_All(t *testing.T) {
 
 	original, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
 	original = original.WithContext(context.WithValue(original.Context(), chi.RouteCtxKey, rctx))
-
 	target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
 
 	up.resolveQueries(target, original)
 
 	q := target.URL.Query()
-	if q.Get("user_id") != "42" || q.Get("order_id") != "99" {
-		t.Errorf("all path params should be forwarded as query, got %v", q)
-	}
+	assert.Equal(t, "42", q.Get("user_id"))
+	assert.Equal(t, "99", q.Get("order_id"))
 }
 
 func TestFilterHeaders_Blacklist(t *testing.T) {
@@ -278,12 +231,8 @@ func TestFilterHeaders_Blacklist(t *testing.T) {
 
 	filtered := up.filterHeaders(headers)
 
-	if filtered.Get("X-Secret") != "" {
-		t.Errorf("X-Secret should be filtered out")
-	}
-	if filtered.Get("X-Forward") != "ok" {
-		t.Errorf("X-Forward should be preserved")
-	}
+	assert.Empty(t, filtered.Get("X-Secret"))
+	assert.Equal(t, "ok", filtered.Get("X-Forward"))
 }
 
 func TestFilterHeaders_EmptyBlacklist_ClonesAll(t *testing.T) {
@@ -298,9 +247,8 @@ func TestFilterHeaders_EmptyBlacklist_ClonesAll(t *testing.T) {
 
 	filtered := up.filterHeaders(headers)
 
-	if filtered.Get("X-One") != "1" || filtered.Get("X-Two") != "2" {
-		t.Errorf("all headers should be preserved when blacklist is empty, got %v", filtered)
-	}
+	assert.Equal(t, "1", filtered.Get("X-One"))
+	assert.Equal(t, "2", filtered.Get("X-Two"))
 }
 
 func TestExpandPathParams_ReplacesKnownParam(t *testing.T) {
@@ -311,18 +259,16 @@ func TestExpandPathParams_ReplacesKnownParam(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	got := expandPathParams("/items/{id}", req)
-	if got != "/items/123" {
-		t.Errorf("expandPathParams = %q; want %q", got, "/items/123")
-	}
+
+	assert.Equal(t, "/items/123", got)
 }
 
 func TestExpandPathParams_PreservesUnknownParam(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "/items/123", nil)
 
 	got := expandPathParams("/items/{unknown}", req)
-	if got != "/items/{unknown}" {
-		t.Errorf("expandPathParams = %q; want %q (unknown param must be preserved)", got, "/items/{unknown}")
-	}
+
+	assert.Equal(t, "/items/{unknown}", got)
 }
 
 func TestClassifyDoError(t *testing.T) {
@@ -339,9 +285,7 @@ func TestClassifyDoError(t *testing.T) {
 
 	for _, c := range cases {
 		got := up.classifyDoError(c.err)
-		if got != c.want {
-			t.Errorf("classifyDoError(%v) = %q; want %q", c.err, got, c.want)
-		}
+		assert.Equal(t, c.want, got)
 	}
 }
 
@@ -364,14 +308,10 @@ func TestIsBreakerFailure(t *testing.T) {
 
 	for _, c := range cases {
 		got := up.isBreakerFailure(&upstreamError{kind: c.kind, err: io.EOF})
-		if got != c.want {
-			t.Errorf("isBreakerFailure(%q) = %v; want %v", c.kind, got, c.want)
-		}
+		assert.Equal(t, c.want, got)
 	}
 
-	if up.isBreakerFailure(nil) {
-		t.Error("isBreakerFailure(nil) = true; want false")
-	}
+	assert.False(t, up.isBreakerFailure(nil))
 }
 
 func TestSelectHost_SingleHost_AlwaysZero(t *testing.T) {
@@ -382,9 +322,8 @@ func TestSelectHost_SingleHost_AlwaysZero(t *testing.T) {
 	}
 
 	for range 5 {
-		if got := up.selectHost(zap.NewNop()); got != 0 {
-			t.Errorf("selectHost() = %d; want 0 for single host", got)
-		}
+		got := up.selectHost(zap.NewNop())
+		assert.Equal(t, int64(0), got)
 	}
 }
 
@@ -403,10 +342,8 @@ func TestSelectHost_RoundRobin(t *testing.T) {
 		seen[up.selectHost(zap.NewNop())]++
 	}
 
-	for idx, count := range seen {
-		if count != 2 {
-			t.Errorf("host %d selected %d times; want 2", idx, count)
-		}
+	for _, count := range seen {
+		assert.Equal(t, 2, count)
 	}
 }
 
@@ -423,9 +360,9 @@ func TestSelectHost_LeastConns_PrefersIdle(t *testing.T) {
 		log:     zap.NewNop(),
 	}
 
-	if got := up.selectHost(zap.NewNop()); got != 1 {
-		t.Errorf("selectHost() = %d; want 1 (idle host)", got)
-	}
+	got := up.selectHost(zap.NewNop())
+
+	assert.Equal(t, int64(1), got)
 }
 
 func TestCall_Success(t *testing.T) {
@@ -435,14 +372,11 @@ func TestCall_Success(t *testing.T) {
 	defer server.Close()
 
 	up := newTestUpstream(server.URL)
+
 	resp := up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	if resp.err != nil {
-		t.Fatalf("unexpected error: %v", resp.err)
-	}
-	if string(resp.body) != `{"ok":true}` {
-		t.Errorf("body = %q; want %q", resp.body, `{"ok":true}`)
-	}
+	require.Nil(t, resp.err)
+	assert.Equal(t, `{"ok":true}`, string(resp.body))
 }
 
 func TestCall_ContextCanceledBeforeRequest(t *testing.T) {
@@ -453,12 +387,8 @@ func TestCall_ContextCanceledBeforeRequest(t *testing.T) {
 
 	resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	if resp.err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if resp.err.kind != upstreamCanceled {
-		t.Errorf("kind = %q; want %q", resp.err.kind, upstreamCanceled)
-	}
+	require.NotNil(t, resp.err)
+	assert.Equal(t, upstreamCanceled, resp.err.kind)
 }
 
 func TestCall_ContextCanceledDuringBackoff(t *testing.T) {
@@ -483,15 +413,9 @@ func TestCall_ContextCanceledDuringBackoff(t *testing.T) {
 
 	resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	if resp.err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if resp.err.kind != upstreamCanceled {
-		t.Errorf("kind = %q; want %q", resp.err.kind, upstreamCanceled)
-	}
-	if calls.Load() > 2 {
-		t.Errorf("too many upstream calls during backoff: %d", calls.Load())
-	}
+	require.NotNil(t, resp.err)
+	assert.Equal(t, upstreamCanceled, resp.err.kind)
+	assert.LessOrEqual(t, calls.Load(), int32(2))
 }
 
 func TestCall_CircuitBreaker_Integration(t *testing.T) {
@@ -510,9 +434,7 @@ func TestCall_CircuitBreaker_Integration(t *testing.T) {
 		up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
 	}
 
-	if calls.Load() != 2 {
-		t.Errorf("expected 2 upstream calls before breaker opened, got %d", calls.Load())
-	}
+	assert.Equal(t, int32(2), calls.Load())
 }
 
 func TestCall_CircuitBreaker_RecoversAfterReset(t *testing.T) {
@@ -534,19 +456,15 @@ func TestCall_CircuitBreaker_RecoversAfterReset(t *testing.T) {
 	req := func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }
 
 	r1 := up.call(context.Background(), req(), nil)
-	if r1.err == nil || r1.err.kind != upstreamBadStatus {
-		t.Fatalf("first call: expected bad_status, got %v", r1.err)
-	}
+	require.NotNil(t, r1.err)
+	require.Equal(t, upstreamBadStatus, r1.err.kind)
 
 	r2 := up.call(context.Background(), req(), nil)
-	if r2.err == nil || r2.err.kind != upstreamCircuitOpen {
-		t.Fatalf("second call: expected circuit_open, got %v", r2.err)
-	}
+	require.NotNil(t, r2.err)
+	require.Equal(t, upstreamCircuitOpen, r2.err.kind)
 
 	time.Sleep(resetTimeout + 20*time.Millisecond)
 
 	r3 := up.call(context.Background(), req(), nil)
-	if r3.err != nil {
-		t.Errorf("third call after reset: expected no error, got %v", r3.err)
-	}
+	assert.Nil(t, r3.err)
 }

@@ -30,7 +30,6 @@ func errResponse(kind upstreamErrorKind) upstreamResponse {
 	}
 }
 
-// jsonEqual проверяет семантическое равенство двух JSON-значений.
 func jsonEqual(t *testing.T, expected string, actual []byte) {
 	t.Helper()
 

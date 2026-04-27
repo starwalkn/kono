@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
@@ -117,21 +119,11 @@ func TestScatter_TwoUpstreams_BothSucceed(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	if results[0].err != nil {
-		t.Errorf("upstream A: unexpected error: %v", results[0].err)
-	}
-	if results[1].err != nil {
-		t.Errorf("upstream B: unexpected error: %v", results[1].err)
-	}
-	if string(results[0].body) != "A" {
-		t.Errorf("upstream A: expected body 'A', got %q", results[0].body)
-	}
-	if string(results[1].body) != "B" {
-		t.Errorf("upstream B: expected body 'B', got %q", results[1].body)
-	}
+	require.Len(t, results, 2)
+	assert.Nil(t, results[0].err)
+	assert.Nil(t, results[1].err)
+	assert.Equal(t, "A", string(results[0].body))
+	assert.Equal(t, "B", string(results[1].body))
 }
 
 func TestScatter_PostRequest_BodyForwarded(t *testing.T) {
@@ -148,15 +140,9 @@ func TestScatter_PostRequest_BodyForwarded(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("hello"))
 	results := newTestScatter().scatter(flow, req)
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].err != nil {
-		t.Fatalf("unexpected error: %v", results[0].err)
-	}
-	if string(results[0].body) != "hello" {
-		t.Errorf("expected body 'hello', got %q", results[0].body)
-	}
+	require.Len(t, results, 1)
+	require.Nil(t, results[0].err)
+	assert.Equal(t, "hello", string(results[0].body))
 }
 
 func TestScatter_BodyExceedsMaxSize_ReturnsNil(t *testing.T) {
@@ -167,9 +153,9 @@ func TestScatter_BodyExceedsMaxSize_ReturnsNil(t *testing.T) {
 	oversizedBody := bytes.Repeat([]byte("x"), maxBodySize+1)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
 
-	if results := newTestScatter().scatter(flow, req); results != nil {
-		t.Errorf("expected nil results for oversized body, got %d results", len(results))
-	}
+	results := newTestScatter().scatter(flow, req)
+
+	assert.Nil(t, results)
 }
 
 func TestScatter_ForwardQueryAndHeaders(t *testing.T) {
@@ -191,12 +177,8 @@ func TestScatter_ForwardQueryAndHeaders(t *testing.T) {
 	req.Header.Set("X-Test", "baz")
 	results := newTestScatter().scatter(flow, req)
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if string(results[0].body) != "bar-baz" {
-		t.Errorf("expected 'bar-baz', got %q", results[0].body)
-	}
+	require.Len(t, results, 1)
+	assert.Equal(t, "bar-baz", string(results[0].body))
 }
 
 func TestScatter_ForwardParams_AddedToQuery(t *testing.T) {
@@ -216,12 +198,8 @@ func TestScatter_ForwardParams_AddedToQuery(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, req)
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if string(results[0].body) != "42" {
-		t.Errorf("expected user_id '42' in query, got %q", results[0].body)
-	}
+	require.Len(t, results, 1)
+	assert.Equal(t, "42", string(results[0].body))
 }
 
 func TestScatter_ExpandPathParams_InUpstreamPath(t *testing.T) {
@@ -244,9 +222,7 @@ func TestScatter_ExpandPathParams_InUpstreamPath(t *testing.T) {
 
 	newTestScatter().scatter(flow, req)
 
-	if receivedPath != "/orders/99" {
-		t.Errorf("expected upstream path '/orders/99', got %q", receivedPath)
-	}
+	assert.Equal(t, "/orders/99", receivedPath)
 }
 
 func TestScatter_Policy_RequireBody_ViolatedOnEmptyResponse(t *testing.T) {
@@ -267,18 +243,11 @@ func TestScatter_Policy_RequireBody_ViolatedOnEmptyResponse(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	if results[0].err != nil {
-		t.Errorf("upstream with body: unexpected error: %v", results[0].err)
-	}
-	if results[1].err == nil {
-		t.Fatal("upstream without body: expected policy violation error, got nil")
-	}
-	if results[1].err.Unwrap() == nil || results[1].err.Unwrap().Error() != "empty body not allowed by upstream policy" {
-		t.Errorf("unexpected error message: %v", results[1].err.Unwrap())
-	}
+	require.Len(t, results, 2)
+	assert.Nil(t, results[0].err)
+	require.NotNil(t, results[1].err)
+	require.Error(t, results[1].err.Unwrap())
+	assert.Equal(t, "empty body not allowed by upstream policy", results[1].err.Unwrap().Error())
 }
 
 func TestScatter_Policy_AllowedStatuses_ViolatedOnUnexpectedStatus(t *testing.T) {
@@ -293,12 +262,8 @@ func TestScatter_Policy_AllowedStatuses_ViolatedOnUnexpectedStatus(t *testing.T)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].err == nil {
-		t.Fatal("expected policy violation error, got nil")
-	}
+	require.Len(t, results, 1)
+	assert.NotNil(t, results[0].err)
 }
 
 func TestScatter_Policy_MaxResponseBodySize_Exceeded(t *testing.T) {
@@ -313,15 +278,9 @@ func TestScatter_Policy_MaxResponseBodySize_Exceeded(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].err == nil {
-		t.Fatal("expected body too large error, got nil")
-	}
-	if results[0].err.kind != upstreamBodyTooLarge {
-		t.Errorf("expected kind %q, got %q", upstreamBodyTooLarge, results[0].err.kind)
-	}
+	require.Len(t, results, 1)
+	require.NotNil(t, results[0].err)
+	assert.Equal(t, upstreamBodyTooLarge, results[0].err.kind)
 }
 
 func TestScatter_UpstreamTimeout_ReturnsTimeoutKind(t *testing.T) {
@@ -336,15 +295,9 @@ func TestScatter_UpstreamTimeout_ReturnsTimeoutKind(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
-	if results[0].err.kind != upstreamTimeout {
-		t.Errorf("expected kind %q, got %q", upstreamTimeout, results[0].err.kind)
-	}
+	require.Len(t, results, 1)
+	require.NotNil(t, results[0].err)
+	assert.Equal(t, upstreamTimeout, results[0].err.kind)
 }
 
 func TestScatter_Retry_SucceedsAfterTwoFailures(t *testing.T) {
@@ -371,15 +324,9 @@ func TestScatter_Retry_SucceedsAfterTwoFailures(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].err != nil {
-		t.Errorf("expected no error after retry, got %v", results[0].err)
-	}
-	if attempts.Load() != 3 {
-		t.Errorf("expected exactly 3 attempts (2 failures + 1 success), got %d", attempts.Load())
-	}
+	require.Len(t, results, 1)
+	assert.Nil(t, results[0].err)
+	assert.Equal(t, int32(3), attempts.Load())
 }
 
 func TestScatter_Retry_ExhaustsMaxRetries(t *testing.T) {
@@ -405,18 +352,10 @@ func TestScatter_Retry_ExhaustsMaxRetries(t *testing.T) {
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].err == nil {
-		t.Fatal("expected error after exhausting retries, got nil")
-	}
-	if results[0].err.kind != upstreamBadStatus {
-		t.Errorf("expected kind %q, got %q", upstreamBadStatus, results[0].err.kind)
-	}
-	if attempts.Load() != int32(maxRetries+1) {
-		t.Errorf("expected %d attempts, got %d", maxRetries+1, attempts.Load())
-	}
+	require.Len(t, results, 1)
+	require.NotNil(t, results[0].err)
+	assert.Equal(t, upstreamBadStatus, results[0].err.kind)
+	assert.Equal(t, int32(maxRetries+1), attempts.Load())
 }
 
 func TestScatter_CircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
@@ -430,7 +369,6 @@ func TestScatter_CircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Circuit breaker is built separately — same as buildCircuitBreaker does at init time
 	cb := circuitbreaker.New(maxFailures, 100*time.Millisecond)
 
 	flow := newTestFlow([]upstream{
@@ -446,20 +384,16 @@ func TestScatter_CircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
 	}
 
 	for i := range maxFailures {
-		if results[i].err == nil || results[i].err.kind != upstreamBadStatus {
-			t.Errorf("request %d: expected %q, got %v", i, upstreamBadStatus, results[i].err)
-		}
+		require.NotNil(t, results[i].err)
+		assert.Equal(t, upstreamBadStatus, results[i].err.kind)
 	}
 
 	for i := maxFailures; i < 5; i++ {
-		if results[i].err == nil || results[i].err.kind != upstreamCircuitOpen {
-			t.Errorf("request %d: expected %q, got %v", i, upstreamCircuitOpen, results[i].err)
-		}
+		require.NotNil(t, results[i].err)
+		assert.Equal(t, upstreamCircuitOpen, results[i].err.kind)
 	}
 
-	if upstreamCalls.Load() != int32(maxFailures) {
-		t.Errorf("expected %d upstream calls, got %d", maxFailures, upstreamCalls.Load())
-	}
+	assert.Equal(t, int32(maxFailures), upstreamCalls.Load())
 }
 
 func TestScatter_CircuitBreaker_ClosesAfterReset(t *testing.T) {
@@ -484,21 +418,17 @@ func TestScatter_CircuitBreaker_ClosesAfterReset(t *testing.T) {
 	d := newTestScatter()
 
 	r1 := d.scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
-	if r1[0].err == nil || r1[0].err.kind != upstreamBadStatus {
-		t.Fatalf("first request: expected %q, got %v", upstreamBadStatus, r1[0].err)
-	}
+	require.NotNil(t, r1[0].err)
+	require.Equal(t, upstreamBadStatus, r1[0].err.kind)
 
 	r2 := d.scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
-	if r2[0].err == nil || r2[0].err.kind != upstreamCircuitOpen {
-		t.Fatalf("second request: expected %q (breaker open), got %v", upstreamCircuitOpen, r2[0].err)
-	}
+	require.NotNil(t, r2[0].err)
+	require.Equal(t, upstreamCircuitOpen, r2[0].err.kind)
 
 	time.Sleep(resetTimeout + 20*time.Millisecond)
 
 	r3 := d.scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
-	if r3[0].err != nil {
-		t.Errorf("third request after reset: expected no error, got %v", r3[0].err)
-	}
+	assert.Nil(t, r3[0].err)
 }
 
 func TestScatter_LoadBalancer_RoundRobin_EvenDistribution(t *testing.T) {
@@ -526,9 +456,8 @@ func TestScatter_LoadBalancer_RoundRobin_EvenDistribution(t *testing.T) {
 		d.scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 	}
 
-	if callsA.Load() != 2 || callsB.Load() != 2 {
-		t.Errorf("expected round-robin 2/2, got A=%d B=%d", callsA.Load(), callsB.Load())
-	}
+	assert.Equal(t, int32(2), callsA.Load())
+	assert.Equal(t, int32(2), callsB.Load())
 }
 
 func TestScatter_LoadBalancer_LeastConns_PrefersFastServer(t *testing.T) {
@@ -565,9 +494,7 @@ func TestScatter_LoadBalancer_LeastConns_PrefersFastServer(t *testing.T) {
 	}
 	wg.Wait()
 
-	if callsB.Load() <= callsA.Load() {
-		t.Errorf("fast upstream B should receive more requests: A=%d B=%d", callsA.Load(), callsB.Load())
-	}
+	assert.Greater(t, callsB.Load(), callsA.Load())
 }
 
 func TestScatter_Semaphore_LimitsParallelism(t *testing.T) {
@@ -603,7 +530,5 @@ func TestScatter_Semaphore_LimitsParallelism(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "/", nil),
 	)
 
-	if maxConcurrent.Load() > maxParallel {
-		t.Errorf("parallelism exceeded limit: max allowed %d, observed %d", maxParallel, maxConcurrent.Load())
-	}
+	assert.LessOrEqual(t, maxConcurrent.Load(), int32(maxParallel))
 }
