@@ -12,7 +12,7 @@ import (
 	"github.com/starwalkn/kono/internal/metric"
 )
 
-func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet, metrics metric.Metrics, log *zap.Logger) []upstream {
+func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet, metrics *metric.Metrics, log *zap.Logger) []upstream {
 	upstreams := make([]upstream, 0, len(cfgs))
 
 	for _, cfg := range cfgs {
@@ -22,7 +22,7 @@ func initUpstreams(cfgs []UpstreamConfig, trustedProxies []*net.IPNet, metrics m
 	return upstreams
 }
 
-func buildUpstream(cfg UpstreamConfig, trustedProxies []*net.IPNet, metrics metric.Metrics, log *zap.Logger) upstream {
+func buildUpstream(cfg UpstreamConfig, trustedProxies []*net.IPNet, metrics *metric.Metrics, log *zap.Logger) upstream {
 	return &httpUpstream{
 		cfg:            buildUpstreamConfig(cfg, trustedProxies),
 		state:          buildUpstreamState(cfg.Hosts),
@@ -30,6 +30,7 @@ func buildUpstream(cfg UpstreamConfig, trustedProxies []*net.IPNet, metrics metr
 		metrics:        metrics,
 		log:            log,
 		client:         buildUpstreamHTTPClient(cfg),
+		streamClient:   buildUpstreamStreamClient(cfg),
 	}
 }
 
@@ -99,6 +100,17 @@ func buildUpstreamHTTPClient(cfg UpstreamConfig) *http.Client {
 			ForceAttemptHTTP2:   true,
 		},
 		Timeout: cfg.Timeout,
+	}
+}
+
+func buildUpstreamStreamClient(cfg UpstreamConfig) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        cfg.Transport.MaxIdleConns,
+			MaxIdleConnsPerHost: cfg.Transport.MaxIdleConnsPerHost,
+			IdleConnTimeout:     cfg.Transport.IdleConnTimeout,
+			ForceAttemptHTTP2:   true,
+		},
 	}
 }
 

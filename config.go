@@ -26,8 +26,13 @@ type Config struct {
 }
 
 type GatewayConfig struct {
+	Service ServiceConfig `yaml:"service"`
 	Server  ServerConfig  `yaml:"server"  validate:"required"`
 	Routing RoutingConfig `yaml:"routing" validate:"required"`
+}
+
+type ServiceConfig struct {
+	Name string `yaml:"name" default:"kono"`
 }
 
 type ServerConfig struct {
@@ -35,6 +40,7 @@ type ServerConfig struct {
 	Timeout time.Duration `yaml:"timeout" default:"5s"`
 	Pprof   PprofConfig   `yaml:"pprof"`
 	Metrics MetricsConfig `yaml:"metrics"`
+	Tracing TracingConfig `yaml:"tracing"`
 }
 
 type PprofConfig struct {
@@ -44,8 +50,15 @@ type PprofConfig struct {
 
 type MetricsConfig struct {
 	Enabled  bool       `yaml:"enabled"`
-	Exporter string     `yaml:"exporter"`
+	Exporter string     `yaml:"exporter" validate:"required_if=Enabled true,omitempty,oneof=otlp prometheus"`
 	OTLP     OTLPConfig `yaml:"otlp"`
+}
+
+type TracingConfig struct {
+	Enabled       bool       `yaml:"enabled"`
+	Exporter      string     `yaml:"exporter" validate:"required_if=Enabled true,omitempty,oneof=otlp"`
+	SamplingRatio float64    `yaml:"sampling_ratio" default:"1.0" validate:"min=0,max=1"`
+	OTLP          OTLPConfig `yaml:"otlp"`
 }
 
 type OTLPConfig struct {
@@ -239,7 +252,11 @@ func newValidator() *validator.Validate {
 	return v
 }
 
-var pathParamPattern = regexp.MustCompile(`\{([^}]+)\}`)
+var pathParamPattern = regexp.MustCompile(`\{
+([^
+}]+)\
+}
+`)
 
 func validatePathParams(cfg Config) error {
 	for _, f := range cfg.Gateway.Routing.Flows {

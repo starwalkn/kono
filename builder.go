@@ -1,6 +1,7 @@
 package kono
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -8,33 +9,71 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/starwalkn/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/otelcommon"
 	"github.com/starwalkn/kono/internal/ratelimit"
+	"github.com/starwalkn/kono/internal/tracing"
 )
 
 type RoutingConfigSet struct {
-	Routing RoutingConfig
-	Metrics MetricsConfig
+	Routing        RoutingConfig
+	Service        ServiceConfig
+	ServiceVersion string // injected via ldflags
+	Metrics        MetricsConfig
+	Tracing        TracingConfig
 }
 
-func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *sdkmetric.MeterProvider, *prometheus.Registry, error) {
+type RouterBundle struct {
+	Router         *Router
+	MeterProvider  otelcommon.Provider
+	TracerProvider otelcommon.Provider
+	PromRegistry   *prometheus.Registry // nil unless metrics.exporter == "prometheus"
+}
+
+func NewRouter(ctx context.Context, cfgSet RoutingConfigSet, log *zap.Logger) (RouterBundle, error) {
+	tracing.InstallPropagator() // Sets the propagator even if tracing is disabled
+
+	res, err := otelcommon.NewResource(ctx, cfgSet.Service.Name, cfgSet.ServiceVersion)
+	if err != nil {
+		return RouterBundle{}, fmt.Errorf("build otel resource: %w", err)
+	}
+
+	meterProvider, promRegistry, err := initMetrics(ctx, cfgSet.Metrics, res)
+	if err != nil {
+		return RouterBundle{}, fmt.Errorf("init metrics: %w", err)
+	}
+
+	metrics, err := metric.New()
+	if err != nil {
+		return RouterBundle{}, fmt.Errorf("init metric instruments: %w", err)
+	}
+
+	tracerProvider, err := initTracing(ctx, cfgSet.Tracing, res)
+	if err != nil {
+		return RouterBundle{}, fmt.Errorf("init tracing: %w", err)
+	}
+
 	routing := cfgSet.Routing
 
-	metrics, provider, reg := initMetrics(cfgSet.Metrics, log)
-
 	router := initMinimalRouter(len(routing.Flows), metrics, log)
-	router.rateLimiter = initRateLimiter(routing.RateLimiter, log)
+	router.rateLimiter, err = initRateLimiter(routing.RateLimiter)
+	if err != nil {
+		return RouterBundle{}, fmt.Errorf("init rate limiter: %w", err)
+	}
 
-	trustedProxies := parseTrustedProxies(cfgSet.Routing.TrustedProxies, log)
+	trustedProxies, err := parseTrustedProxies(cfgSet.Routing.TrustedProxies)
+	if err != nil {
+		return RouterBundle{}, fmt.Errorf("parse trusted proxies: %w", err)
+	}
 
 	for _, fcfg := range routing.Flows {
-		compiledFlow, err := compileFlow(fcfg, trustedProxies, metrics, log)
-		if err != nil {
-			log.Fatal("failed to compile flow", zap.Error(err))
+		compiledFlow, compileErr := compileFlow(fcfg, trustedProxies, metrics, log)
+		if compileErr != nil {
+			return RouterBundle{}, fmt.Errorf("compile flow %q: %w", fcfg.Path, compileErr)
 		}
 
 		router.flows = append(router.flows, compiledFlow)
@@ -42,7 +81,12 @@ func NewRouter(cfgSet RoutingConfigSet, log *zap.Logger) (*Router, *sdkmetric.Me
 
 	router.registerFlows()
 
-	return router, provider, reg, nil
+	return RouterBundle{
+		Router:         router,
+		MeterProvider:  meterProvider,
+		PromRegistry:   promRegistry,
+		TracerProvider: tracerProvider,
+	}, nil
 }
 
 func (r *Router) registerFlows() {
@@ -69,7 +113,7 @@ func (r *Router) registerFlows() {
 	}
 }
 
-func initMinimalRouter(routesCount int, metrics metric.Metrics, log *zap.Logger) *Router {
+func initMinimalRouter(routesCount int, metrics *metric.Metrics, log *zap.Logger) *Router {
 	return &Router{
 		chiRouter: chi.NewMux(),
 		scatter: &defaultScatter{
@@ -84,64 +128,86 @@ func initMinimalRouter(routesCount int, metrics metric.Metrics, log *zap.Logger)
 	}
 }
 
-func initMetrics(cfg MetricsConfig, log *zap.Logger) (metric.Metrics, *sdkmetric.MeterProvider, *prometheus.Registry) {
+func initMetrics(ctx context.Context, cfg MetricsConfig, res *resource.Resource) (otelcommon.Provider, *prometheus.Registry, error) {
 	if !cfg.Enabled {
-		return metric.NewNop(), nil, nil
+		return otelcommon.NewNopProvider(), nil, nil
 	}
 
 	switch cfg.Exporter {
 	case "prometheus":
-		m, reg, err := metric.NewOtelPrometheus()
+		provider, reg, err := metric.NewOtelPrometheus(res)
 		if err != nil {
-			log.Fatal("failed to init prometheus metrics", zap.Error(err))
+			return nil, nil, fmt.Errorf("init prometheus metrics: %w", err)
 		}
 
-		return m, nil, reg
+		return provider, reg, nil
+
 	case "otlp":
-		m, provider, err := metric.NewOtelOTLP(cfg.OTLP.Endpoint, cfg.OTLP.Insecure, cfg.OTLP.Interval)
+		provider, err := metric.NewOtelOTLP(ctx, cfg.OTLP.Endpoint, cfg.OTLP.Insecure, cfg.OTLP.Interval, res)
 		if err != nil {
-			log.Fatal("failed to init otlp metrics", zap.Error(err))
+			return nil, nil, fmt.Errorf("init otlp metrics: %w", err)
 		}
 
-		return m, provider, nil
+		return provider, nil, nil
 	default:
-		log.Fatal("unknown metrics exporter", zap.String("exporter", cfg.Exporter))
-		return metric.NewNop(), nil, nil
+		return nil, nil, fmt.Errorf("unsupported metrics exporter: %q", cfg.Exporter)
 	}
 }
 
-func initRateLimiter(cfg RateLimiterConfig, log *zap.Logger) *ratelimit.RateLimit {
+func initTracing(ctx context.Context, cfg TracingConfig, res *resource.Resource) (otelcommon.Provider, error) {
 	if !cfg.Enabled {
-		return nil
+		return otelcommon.NewNopProvider(), nil
+	}
+
+	switch cfg.Exporter {
+	case "otlp":
+		tracerProvider, err := tracing.NewOtelOTLP(
+			ctx,
+			cfg.OTLP.Endpoint,
+			cfg.OTLP.Insecure,
+			cfg.OTLP.Interval,
+			cfg.SamplingRatio,
+			res,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("init otlp tracing: %w", err)
+		}
+
+		return tracerProvider, nil
+	default:
+		return nil, fmt.Errorf("unsupported tracing exporter: %q", cfg.Exporter)
+	}
+}
+
+func initRateLimiter(cfg RateLimiterConfig) (*ratelimit.RateLimit, error) {
+	if !cfg.Enabled {
+		return nil, nil //nolint:nilnil // it is ok for optional modules
 	}
 
 	rl := ratelimit.New(cfg.Config)
 	if err := rl.Start(); err != nil {
-		log.Fatal("failed to start rate limiter", zap.Error(err))
+		return nil, fmt.Errorf("start rate limiter: %w", err)
 	}
 
-	return rl
+	return rl, nil
 }
 
-func parseTrustedProxies(proxies []string, log *zap.Logger) []*net.IPNet {
+func parseTrustedProxies(proxies []string) ([]*net.IPNet, error) {
 	result := make([]*net.IPNet, 0, len(proxies))
 
 	for _, proxy := range proxies {
 		_, ipnet, err := net.ParseCIDR(proxy)
 		if err != nil {
-			log.Fatal("failed to parse trusted proxy CIDR",
-				zap.String("cidr", proxy),
-				zap.Error(err),
-			)
+			return nil, fmt.Errorf("parse trusted proxy CIDR: %w", err)
 		}
 
 		result = append(result, ipnet)
 	}
 
-	return result
+	return result, nil
 }
 
-func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics metric.Metrics, log *zap.Logger) (flow, error) {
+func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics *metric.Metrics, log *zap.Logger) (flow, error) {
 	upstreams := initUpstreams(cfg.Upstreams, trustedProxies, metrics, log)
 
 	if cfg.Passthrough && len(upstreams) != 1 {
@@ -235,7 +301,7 @@ func compileStrategy(s string) (aggregationStrategy, error) {
 	case "namespace":
 		return strategyNamespace, nil
 	default:
-		return 0, fmt.Errorf("unknown aggregation strategy: '%q'", s)
+		return 0, fmt.Errorf("unknown aggregation strategy: %q", s)
 	}
 }
 
@@ -250,6 +316,6 @@ func compileConflictPolicy(p string) (conflictPolicy, error) {
 	case "prefer":
 		return conflictPolicyPrefer, nil
 	default:
-		return 0, fmt.Errorf("unknown aggregation conflict policy: '%q'", p)
+		return 0, fmt.Errorf("unknown aggregation conflict policy: %q", p)
 	}
 }

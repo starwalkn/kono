@@ -3,9 +3,11 @@ package kono
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -17,6 +19,20 @@ import (
 	"github.com/starwalkn/kono/internal/metric"
 	"github.com/starwalkn/kono/sdk"
 )
+
+var testMetrics *metric.Metrics
+
+func TestMain(m *testing.M) {
+	tm, err := metric.New()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "init test metrics: %v\n", err)
+		os.Exit(1)
+	}
+
+	testMetrics = tm
+
+	os.Exit(m.Run())
+}
 
 func decodeJSONResponse(t *testing.T, body []byte) ClientResponse {
 	t.Helper()
@@ -77,7 +93,7 @@ func newTestRouter(flows []flow, d scatter, a aggregator) *Router {
 		aggregator: a,
 		flows:      flows,
 		log:        zap.NewNop(),
-		metrics:    metric.NewNop(),
+		metrics:    testMetrics,
 	}
 
 	r.registerFlows()

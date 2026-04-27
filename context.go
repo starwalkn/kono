@@ -25,6 +25,10 @@ func (c *konoContext) Response() *http.Response {
 	return c.resp
 }
 
+func (c *konoContext) SetRequest(req *http.Request) {
+	c.req = req
+}
+
 func (c *konoContext) SetResponse(resp *http.Response) {
 	c.resp = resp
 }

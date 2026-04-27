@@ -16,7 +16,6 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
-	"github.com/starwalkn/kono/internal/metric"
 )
 
 const defaultMaxParallel = 10
@@ -29,7 +28,7 @@ func newTestUpstream(host string, opts ...func(*httpUpstream)) *httpUpstream {
 			timeout: 500 * time.Millisecond,
 		},
 		state:   upstreamState{},
-		metrics: metric.NewNop(),
+		metrics: testMetrics,
 		log:     zap.NewNop(),
 		client:  http.DefaultClient,
 	}
@@ -94,7 +93,7 @@ func newTestFlow(upstreams []upstream, maxParallel int64) *flow {
 func newTestScatter() *defaultScatter {
 	return &defaultScatter{
 		log:     zap.NewNop(),
-		metrics: metric.NewNop(),
+		metrics: testMetrics,
 	}
 }
 

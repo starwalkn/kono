@@ -7,5 +7,6 @@ import "net/http"
 type Context interface {
 	Request() *http.Request
 	Response() *http.Response
+	SetRequest(req *http.Request)
 	SetResponse(resp *http.Response)
 }

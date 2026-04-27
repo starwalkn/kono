@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
-	"github.com/starwalkn/kono/internal/metric"
 )
 
 //nolint:unparam // it is tests
@@ -378,7 +377,7 @@ func TestIsBreakerFailure(t *testing.T) {
 func TestSelectHost_SingleHost_AlwaysZero(t *testing.T) {
 	up := &httpUpstream{
 		cfg:     upstreamConfig{hosts: []string{"http://only"}},
-		metrics: metric.NewNop(),
+		metrics: testMetrics,
 		log:     zap.NewNop(),
 	}
 
@@ -395,7 +394,7 @@ func TestSelectHost_RoundRobin(t *testing.T) {
 			hosts:  []string{"a", "b", "c"},
 			lbMode: lbModeRoundRobin,
 		},
-		metrics: metric.NewNop(),
+		metrics: testMetrics,
 		log:     zap.NewNop(),
 	}
 
@@ -420,7 +419,7 @@ func TestSelectHost_LeastConns_PrefersIdle(t *testing.T) {
 		state: upstreamState{
 			activeConnections: []int64{5, 0},
 		},
-		metrics: metric.NewNop(),
+		metrics: testMetrics,
 		log:     zap.NewNop(),
 	}
 

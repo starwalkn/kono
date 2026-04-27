@@ -20,12 +20,17 @@ import (
 )
 
 const (
-	shutdownTimeout = 10 * time.Second
+	shutdownTimeout  = 10 * time.Second
+	bootstrapTimeout = 30 * time.Second
 
 	pprofReadTimeout  = 10 * time.Second
 	pprofWriteTimeout = 30 * time.Second
 	pprofIdleTimeout  = 60 * time.Second
 )
+
+// version is populated via -ldflags "-X main.version=…" at build time.
+// Empty when built without ldflags; tracing then omits service.version.
+var version string
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -58,15 +63,24 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv, meterProvider, err := server.New(cfg.Gateway, log)
+	bootstrapCtx, cancelBootstrap := context.WithTimeout(ctx, bootstrapTimeout)
+
+	srv, err := server.New(bootstrapCtx, cfg.Gateway, version, log)
+	cancelBootstrap()
 	if err != nil {
-		return err
+		return fmt.Errorf("server init: %w", err)
 	}
 
+	serverErrCh := make(chan error, 1)
 	go func() {
 		if err = srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("server error", zap.Error(err))
+			serverErrCh <- err
+			stop()
+
+			return
 		}
+
+		serverErrCh <- nil
 	}()
 
 	log.Info("server started")
@@ -83,14 +97,12 @@ func runServe() error {
 		log.Error("graceful shutdown failed", zap.Error(err))
 	}
 
-	// If metrics exporter is prometheus, meterProvider will be nil
-	if meterProvider != nil {
-		if err = meterProvider.Shutdown(shutdownCtx); err != nil {
-			log.Error("metrics shutdown failed", zap.Error(err))
-		}
-	}
-
 	stopPprof(shutdownCtx)
+
+	// Drain Start's exit so we don't lose a listener error on the floor
+	if err = <-serverErrCh; err != nil {
+		log.Error("server error", zap.Error(err))
+	}
 
 	log.Info("server stopped")
 

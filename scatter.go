@@ -7,9 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/metric"
+	"github.com/starwalkn/kono/internal/tracing"
 )
 
 const maxBodySize = 5 << 20 // 5 MB
@@ -20,7 +25,7 @@ type scatter interface {
 
 type defaultScatter struct {
 	log     *zap.Logger
-	metrics metric.Metrics
+	metrics *metric.Metrics
 }
 
 var wgPool = sync.Pool{
@@ -34,8 +39,20 @@ var wgPool = sync.Pool{
 func (d *defaultScatter) scatter(f *flow, original *http.Request) []upstreamResponse {
 	log := d.log.With(zap.String("request_id", requestIDFromContext(original.Context())))
 
+	tracer := otel.Tracer(tracing.TracerName)
+	ctx, span := tracer.Start(original.Context(), "kono.scatter",
+		trace.WithAttributes(
+			attribute.Int("kono.upstream.count", len(f.upstreams)),
+			attribute.String("kono.aggregation.strategy", f.aggregation.strategy.String()),
+		),
+	)
+	defer span.End()
+
+	original = original.WithContext(ctx)
+
 	body, ok := d.readBody(original, log)
 	if !ok {
+		span.SetStatus(codes.Error, "body too large")
 		return nil
 	}
 
@@ -88,10 +105,22 @@ func (d *defaultScatter) callUpstream(
 	log *zap.Logger,
 ) upstreamResponse {
 	start := time.Now()
-	ctx := original.Context()
 
+	tracer := otel.Tracer(tracing.TracerName)
+	ctx, span := tracer.Start(original.Context(), "kono.upstream",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("kono.upstream.name", u.name()),
+			attribute.String("kono.flow.path", f.path),
+		),
+	)
+	defer span.End()
+
+	acquireStart := time.Now()
 	if err := f.sem.Acquire(ctx, 1); err != nil {
 		log.Error("cannot acquire semaphore", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "semaphore acquire failed")
 
 		return upstreamResponse{
 			err: &upstreamError{
@@ -102,11 +131,20 @@ func (d *defaultScatter) callUpstream(
 	}
 	defer f.sem.Release(1)
 
+	waited := time.Since(acquireStart)
+	span.SetAttributes(attribute.Int64("kono.upstream.wait_us", waited.Microseconds()))
+	span.AddEvent("semaphore.acquired")
+
 	d.metrics.IncUpstreamRequestsTotal(f.path, u.name())
 
 	resp := u.call(ctx, original, body)
 	if resp.err != nil {
 		d.metrics.IncUpstreamErrorsTotal(f.path, u.name(), string(resp.err.kind))
+
+		span.RecordError(resp.err.Unwrap())
+		span.SetAttributes(attribute.String("kono.upstream.error_kind", resp.err.Error()))
+		span.SetStatus(codes.Error, "upstream call failed")
+
 		log.Error("upstream call failed",
 			zap.String("name", u.name()),
 			zap.Error(resp.err.Unwrap()),

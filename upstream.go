@@ -17,6 +17,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
@@ -60,9 +65,10 @@ type httpUpstream struct {
 	cfg            upstreamConfig
 	state          upstreamState
 	circuitBreaker *circuitbreaker.CircuitBreaker
-	metrics        metric.Metrics
+	metrics        *metric.Metrics
 	log            *zap.Logger
 	client         *http.Client
+	streamClient   *http.Client
 }
 
 type upstreamConfig struct {
@@ -214,15 +220,31 @@ func (u *httpUpstream) doCall(ctx context.Context, original *http.Request, origi
 		return &upstreamResponse{err: &upstreamError{kind: upstreamInternal, err: err}}
 	}
 
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("http.method", req.Method),
+		attribute.String("http.url", req.URL.String()),
+		attribute.String("server.address", req.URL.Host),
+		attribute.String("kono.upstream.host", u.cfg.hosts[selectedHost]),
+	)
+
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+
 	httpResp, err := u.client.Do(req)
 	if err != nil {
 		log.Error("upstream request failed", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "upstream request failed")
+
 		return &upstreamResponse{err: &upstreamError{kind: u.classifyDoError(err), err: err}}
 	}
 	defer httpResp.Body.Close()
 
+	span.SetAttributes(attribute.Int("http.status_code", httpResp.StatusCode))
+
 	if httpResp.StatusCode >= http.StatusInternalServerError {
 		log.Error("upstream returned server error", zap.Int("status_code", httpResp.StatusCode))
+		span.SetStatus(codes.Error, http.StatusText(httpResp.StatusCode))
 
 		return &upstreamResponse{
 			status: httpResp.StatusCode,
@@ -232,6 +254,9 @@ func (u *httpUpstream) doCall(ctx context.Context, original *http.Request, origi
 
 	body, uerr := u.readBody(ctx, httpResp.Body, log)
 	if uerr != nil {
+		span.RecordError(uerr.Unwrap())
+		span.SetStatus(codes.Error, uerr.Error())
+
 		return &upstreamResponse{status: httpResp.StatusCode, err: uerr}
 	}
 
@@ -570,7 +595,6 @@ func (u *httpUpstream) proxy(ctx context.Context, w http.ResponseWriter, origina
 	if !strings.HasSuffix(host, "/") {
 		hostPath += "/"
 	}
-
 	hostPath += path
 
 	method := u.cfg.method
@@ -592,11 +616,29 @@ func (u *httpUpstream) proxy(ctx context.Context, w http.ResponseWriter, origina
 		return fmt.Errorf("resolve headers: %w", err)
 	}
 
-	resp, err := u.client.Do(req)
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("http.method", req.Method),
+		attribute.String("http.url", req.URL.String()),
+		attribute.String("server.address", req.URL.Host),
+		attribute.String("kono.upstream.host", host),
+	)
+
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+	resp, err := u.streamClient.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "passthrough upstream call failed")
+
 		return fmt.Errorf("upstream call: %w", err)
 	}
 	defer resp.Body.Close()
+
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	if resp.StatusCode >= http.StatusInternalServerError {
+		span.SetStatus(codes.Error, http.StatusText(resp.StatusCode))
+	}
 
 	for k, vv := range resp.Header {
 		if _, skip := hopByHopHeaders[k]; skip {
@@ -612,6 +654,14 @@ func (u *httpUpstream) proxy(ctx context.Context, w http.ResponseWriter, origina
 	w.WriteHeader(resp.StatusCode)
 
 	if err = streamCopy(w, resp.Body); err != nil {
+		if errors.Is(err, context.Canceled) {
+			span.SetAttributes(attribute.String("kono.passthrough.end_reason", "client_disconnect"))
+			return nil
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "stream body failed")
+
 		return fmt.Errorf("stream body: %w", err)
 	}
 
