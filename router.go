@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +44,22 @@ var hopByHopHeaders = map[string]struct{}{
 	"Proxy-Authorization": {},
 	"TE":                  {},
 	"Upgrade":             {},
+}
+
+var fingerprintIgnoredHeaders = map[string]struct{}{
+	"User-Agent":        {},
+	"Cookie":            {},
+	"Authorization":     {},
+	"X-Request-Id":      {},
+	"X-Forwarded-For":   {},
+	"X-Forwarded-Proto": {},
+	"X-Forwarded-Host":  {},
+	"X-Forwarded-Port":  {},
+	"X-Real-Ip":         {},
+	"Forwarded":         {},
+	"Host":              {},
+	"Accept-Encoding":   {},
+	"Accept-Language":   {},
 }
 
 type Router struct {
@@ -137,15 +156,22 @@ func (r *Router) newFlowHandler(f *flow) http.Handler {
 		span.SetAttributes(attribute.String("http.route", f.path))
 
 		requestID := getOrCreateRequestID(req)
+		fingerprint := computeFingerprint(req, f.path)
 
 		ctx := req.Context()
-		ctx = withRoute(withRequestID(ctx, requestID), f.path)
+		ctx = withRoute(withRequestID(withFingerprint(ctx, fingerprint), requestID), f.path)
 
 		req = req.WithContext(ctx)
 
-		span.SetAttributes(attribute.String("kono.request.id", requestID))
+		span.SetAttributes(
+			attribute.String("kono.request.id", requestID),
+			attribute.String("kono.request.fingerprint", fingerprint),
+		)
 
-		log := r.log.With(zap.String("request_id", requestID))
+		log := r.log.With(
+			zap.String("request_id", requestID),
+			zap.String("fingerprint", fingerprint),
+		)
 
 		if f.passthrough {
 			r.handlePassthrough(w, req, f, log)
@@ -266,8 +292,10 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []upstream
 	}
 
 	requestID := requestIDFromContext(ctx)
+	fingerprint := fingerprintFromContext(ctx)
 
 	headers.Set("X-Request-ID", requestID)
+	headers.Set("X-Request-Fingerprint", fingerprint)
 	headers.Set("Content-Type", "application/json; charset=utf-8")
 
 	log.Debug("aggregation finished",
@@ -420,6 +448,44 @@ func getOrCreateRequestID(r *http.Request) string {
 	}
 
 	return strings.ToLower(ulid.MustNew(ulid.Timestamp(time.Now()), globalEntropy).String())
+}
+
+func computeFingerprint(r *http.Request, flowPath string) string {
+	var b strings.Builder
+
+	b.WriteString(r.Method)
+	b.WriteByte('|')
+	b.WriteString(flowPath)
+	b.WriteByte('|')
+
+	headers := make([]string, 0, len(r.Header))
+	for name := range r.Header {
+		if _, skip := fingerprintIgnoredHeaders[name]; skip {
+			continue
+		}
+
+		headers = append(headers, name)
+	}
+
+	sort.Strings(headers)
+	b.WriteString(strings.Join(headers, ","))
+	b.WriteByte('|')
+
+	if r.URL.RawQuery != "" {
+		qs := r.URL.Query()
+
+		queries := make([]string, 0, len(qs))
+		for name := range qs {
+			queries = append(queries, name)
+		}
+
+		sort.Strings(queries)
+		b.WriteString(strings.Join(queries, ","))
+	}
+
+	sum := sha256.Sum256([]byte(b.String()))
+
+	return hex.EncodeToString(sum[:8])
 }
 
 const (

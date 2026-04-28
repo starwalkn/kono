@@ -380,3 +380,17 @@ func TestRouter_ServeHTTP_WithMiddleware(t *testing.T) {
 	assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
 	assert.Equal(t, "ok", res.Header.Get("X-Middleware"))
 }
+
+func TestComputeFingerprint_HeaderQueryAmbiguity(t *testing.T) {
+	r1 := httptest.NewRequest(http.MethodGet, "/u/{id}?id=1", nil)
+	r1.Header.Set("Accept", "*/*")
+
+	r2 := httptest.NewRequest(http.MethodGet, "/u/{id}", nil)
+	r2.Header.Set("Accept", "*/*")
+	r2.Header.Set("Id", "anything")
+
+	f1 := computeFingerprint(r1, "/u/{id}")
+	f2 := computeFingerprint(r2, "/u/{id}")
+
+	assert.NotEqual(t, f1, f2, "fingerprint must distinguish header from query key with same name")
+}

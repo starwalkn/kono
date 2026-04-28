@@ -7,6 +7,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] - ?
+
+### Added
+- Distributed tracing via OpenTelemetry OTLP/HTTP (`gateway.server.tracing` config block)
+- Service identity via `gateway.service.name` config and `-ldflags "-X main.version=…"` injection
+- W3C TraceContext + Baggage propagation, installed unconditionally
+- `X-Request-Fingerprint` response header and `kono.request.fingerprint` span attribute for correlation across observability channels
+
+### Fixed
+- Passthrough flows no longer broken by `client.Timeout` (separate streamClient without timeout)
+- Passthrough flows no longer broken by `http.Server.WriteTimeout` (per-request `ResponseController.SetWriteDeadline(time.Time{})`)
+- Client disconnect during passthrough no longer logged as upstream error
+
+---
+
 ## [0.2.0] — 2026-04-26
 
 ### Added
