@@ -1,0 +1,45 @@
+package main
+
+import (
+	"github.com/starwalkn/kono/sdk"
+)
+
+type Plugin struct{}
+
+func NewPlugin() sdk.Plugin {
+	return &Plugin{}
+}
+
+func (p *Plugin) Info() sdk.PluginInfo {
+	return sdk.PluginInfo{
+		Name:        "{{ .Name }}",
+		Description: "{{ .Description }}",
+		Version:     "v1",
+		Author:      "{{ .Author }}",
+	}
+}
+
+func (p *Plugin) Type() sdk.PluginType {
+	return sdk.PluginTypeRequest
+}
+
+func (p *Plugin) Init(cfg map[string]interface{}) {
+	// TODO: parse plugin configuration from cfg
+	_ = cfg
+}
+
+func (p *Plugin) Execute(ctx sdk.Context) error {
+	req := ctx.Request()
+	if req == nil {
+		return nil
+	}
+
+	// TODO: inspect or modify the outgoing request before it reaches upstreams.
+	// Common operations:
+	//   - req.Header.Set("X-Custom", "value") — add or override headers
+	//   - req.Header.Del("Cookie") — strip sensitive headers
+	//   - validate required fields and return an error to abort the request
+	_ = req
+
+	return nil
+}

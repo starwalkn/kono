@@ -5,10 +5,21 @@ type PluginType int
 
 const (
 	// PluginTypeRequest runs before upstream dispatch. Can modify request context.
-	PluginTypeRequest = iota
+	PluginTypeRequest PluginType = iota
 	// PluginTypeResponse runs after aggregation. Can modify response headers and body.
-	PluginTypeResponse
+	PluginTypeResponse PluginType = iota
 )
+
+func (pt PluginType) String() string {
+	switch pt {
+	case PluginTypeRequest:
+		return "request"
+	case PluginTypeResponse:
+		return "response"
+	default:
+		return "unknown"
+	}
+}
 
 // PluginInfo contains metadata about a plugin.
 type PluginInfo struct {

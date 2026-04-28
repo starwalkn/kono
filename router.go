@@ -242,7 +242,6 @@ func (r *Router) newFlowHandler(f *flow) http.Handler {
 // the caller must treat false as "response already sent, stop processing".
 func (r *Router) executePlugins(pluginType sdk.PluginType, w http.ResponseWriter, kctx sdk.Context, f *flow, log *zap.Logger) bool {
 	tracer := otel.Tracer(tracing.TracerName)
-	phase := pluginPhaseName(pluginType)
 
 	for _, p := range f.plugins {
 		if p.Type() != pluginType {
@@ -250,14 +249,14 @@ func (r *Router) executePlugins(pluginType sdk.PluginType, w http.ResponseWriter
 		}
 
 		log.Debug("executing plugin",
-			zap.String("type", phase),
+			zap.String("type", pluginType.String()),
 			zap.String("name", p.Info().Name),
 		)
 
 		ctx, span := tracer.Start(kctx.Request().Context(), "kono.plugin",
 			trace.WithAttributes(
 				attribute.String("kono.plugin.name", p.Info().Name),
-				attribute.String("kono.plugin.type", phase),
+				attribute.String("kono.plugin.type", pluginType.String()),
 			),
 		)
 
@@ -270,7 +269,7 @@ func (r *Router) executePlugins(pluginType sdk.PluginType, w http.ResponseWriter
 			span.SetStatus(codes.Error, "plugin execution failed")
 
 			log.Error("plugin execution failed",
-				zap.String("type", phase),
+				zap.String("type", pluginType.String()),
 				zap.String("name", p.Info().Name),
 				zap.Error(err),
 			)
@@ -513,15 +512,4 @@ func errorPriority(e ClientError) int {
 	}
 
 	return 0
-}
-
-func pluginPhaseName(phase sdk.PluginType) string {
-	switch phase {
-	case sdk.PluginTypeRequest:
-		return "request"
-	case sdk.PluginTypeResponse:
-		return "response"
-	default:
-		return "unknown"
-	}
 }

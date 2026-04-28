@@ -1,0 +1,67 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+
+	"github.com/starwalkn/kono/sdk"
+)
+
+type Plugin struct{}
+
+func NewPlugin() sdk.Plugin {
+	return &Plugin{}
+}
+
+func (p *Plugin) Info() sdk.PluginInfo {
+	return sdk.PluginInfo{
+		Name:        "{{ .Name }}",
+		Description: "{{ .Description }}",
+		Version:     "v1",
+		Author:      "{{ .Author }}",
+	}
+}
+
+func (p *Plugin) Type() sdk.PluginType {
+	return sdk.PluginTypeResponse
+}
+
+func (p *Plugin) Init(cfg map[string]interface{}) {
+	// TODO: parse plugin configuration from cfg
+	_ = cfg
+}
+
+func (p *Plugin) Execute(ctx sdk.Context) error {
+	if ctx.Response() == nil || ctx.Response().Body == nil {
+		return nil
+	}
+
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(ctx.Response().Body); err != nil {
+		return fmt.Errorf("{{ .Name }}: cannot read body: %w", err)
+	}
+
+	if buf.Len() == 0 {
+		ctx.Response().Body = io.NopCloser(buf)
+		return nil
+	}
+
+	var data interface{}
+	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
+		ctx.Response().Body = io.NopCloser(buf)
+		return nil
+	}
+
+	// TODO: transform data here
+	_ = data
+
+	newBody, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("{{ .Name }}: cannot marshal JSON: %w", err)
+	}
+
+	ctx.Response().Body = io.NopCloser(bytes.NewReader(newBody))
+	return nil
+}
