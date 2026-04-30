@@ -22,7 +22,7 @@ const (
 
 const extSo = ".so"
 
-func initPlugins(cfgs []PluginConfig, log *zap.Logger) []sdk.Plugin {
+func initPlugins(cfgs []PluginConfig, log *zap.Logger) ([]sdk.Plugin, error) {
 	plugins := make([]sdk.Plugin, 0, len(cfgs))
 
 	for _, cfg := range cfgs {
@@ -34,22 +34,24 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) []sdk.Plugin {
 
 		soPath := resolveSoPath(cfg.Source, cfg.Name, cfg.Path, builtinPluginsPath)
 
-		plugin := loadPlugin(soPath, cfg.Config, log)
-		if plugin == nil {
-			log.Fatal("failed to load plugin",
-				zap.String("plugin", cfg.Name),
-				zap.String("path", cfg.Path),
-			)
+		plugin, err := loadPlugin(soPath, cfg.Config, log)
+		if err != nil {
+			if cfg.Source == sourceBuiltin {
+				return nil, fmt.Errorf("cannot load builtin plugin %q: %w", cfg.Name, err)
+			}
+
+			return nil, fmt.Errorf("cannot load plugin %q from path %q: %w", cfg.Name, cfg.Path, err)
 		}
 
 		log.Info("plugin initialized", zap.String("name", plugin.Info().Name))
+
 		plugins = append(plugins, plugin)
 	}
 
-	return plugins
+	return plugins, nil
 }
 
-func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []sdk.Middleware {
+func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) ([]sdk.Middleware, error) {
 	middlewares := make([]sdk.Middleware, 0, len(cfgs))
 
 	for _, cfg := range cfgs {
@@ -61,19 +63,21 @@ func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) []sdk.Middleware 
 
 		soPath := resolveSoPath(cfg.Source, cfg.Name, cfg.Path, builtinMiddlewaresPath)
 
-		middleware := loadMiddleware(soPath, cfg.Config, log)
-		if middleware == nil {
-			log.Fatal("failed to load middleware",
-				zap.String("name", cfg.Name),
-				zap.String("path", cfg.Path),
-			)
+		middleware, err := loadMiddleware(soPath, cfg.Config, log)
+		if err != nil {
+			if cfg.Source == sourceBuiltin {
+				return nil, fmt.Errorf("cannot load builtin middleware %q: %w", cfg.Name, err)
+			}
+
+			return nil, fmt.Errorf("cannot load middleware %q from path %q: %w", cfg.Name, cfg.Path, err)
 		}
 
 		log.Info("middleware initialized", zap.String("name", middleware.Name()))
+
 		middlewares = append(middlewares, middleware)
 	}
 
-	return middlewares
+	return middlewares, nil
 }
 
 // resolveSoPath строит путь к .so файлу по source и имени.
@@ -93,43 +97,36 @@ func resolveSoPath(source, name, filePath, builtinPath string) string {
 	}
 }
 
-func loadPlugin(path string, cfg map[string]interface{}, log *zap.Logger) sdk.Plugin {
-	factory := loadSymbol[func() sdk.Plugin](path, "NewPlugin", log)
-	if factory == nil {
-		return nil
+func loadPlugin(path string, cfg map[string]interface{}, log *zap.Logger) (sdk.Plugin, error) {
+	factory, err := loadSymbol[func() sdk.Plugin](path, "NewPlugin", log)
+	if err != nil {
+		return nil, fmt.Errorf("load plugin symbol: %w", err)
 	}
 
 	p := factory()
 	if p == nil {
-		log.Error("plugin factory returned nil", zap.String("path", path))
-		return nil
+		return nil, fmt.Errorf("plugin factory for path %q returned nil", path)
 	}
 
 	p.Init(cfg)
 
-	return p
+	return p, nil
 }
 
-func loadMiddleware(path string, cfg map[string]interface{}, log *zap.Logger) sdk.Middleware {
-	factory := loadSymbol[func() sdk.Middleware](path, "NewMiddleware", log)
-	if factory == nil {
-		return nil
+func loadMiddleware(path string, cfg map[string]interface{}, log *zap.Logger) (sdk.Middleware, error) {
+	factory, err := loadSymbol[func() sdk.Middleware](path, "NewMiddleware", log)
+	if err != nil {
+		return nil, fmt.Errorf("load middleware symbol: %w", err)
 	}
 
 	mw := factory()
 	if mw == nil {
-		log.Error("middleware factory returned nil", zap.String("path", path))
-		return nil
+		return nil, fmt.Errorf("middleware factory for path %q returned nil", path)
 	}
 
 	if err := mw.Init(cfg); err != nil {
-		log.Error("cannot initialize middleware",
-			zap.String("name", mw.Name()),
-			zap.Error(err),
-		)
-
-		return nil
+		return nil, fmt.Errorf("init middleware %s: %w", mw.Name(), err)
 	}
 
-	return mw
+	return mw, nil
 }

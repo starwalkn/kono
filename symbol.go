@@ -1,36 +1,36 @@
 package kono
 
 import (
+	"errors"
+	"fmt"
 	"plugin"
 
 	"go.uber.org/zap"
 )
 
-func loadSymbol[T any](path, symbol string, log *zap.Logger) T {
+func loadSymbol[T any](path, symbol string, log *zap.Logger) (T, error) {
 	var zero T
 
 	log = log.With(zap.String("path", path))
 
 	p, err := plugin.Open(path)
 	if err != nil {
-		log.Error("cannot open plugin", zap.Error(err))
-		return zero
+		return zero, fmt.Errorf("open plugin: %w", err)
 	}
 
 	sym, err := p.Lookup(symbol)
 	if err != nil {
-		log.Error("symbol not found", zap.Error(err))
-		return zero
+		return zero, fmt.Errorf("lookup symbol: %w", err)
 	}
 
 	factory, ok := sym.(T)
 	if !ok {
-		log.Error("symbol has wrong signature")
-		return zero
+		return zero, errors.New("symbol has wrong signature")
 	}
 
 	pl := factory
+
 	log.Debug("symbol loaded successfully")
 
-	return pl
+	return pl, nil
 }

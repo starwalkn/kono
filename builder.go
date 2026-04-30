@@ -224,8 +224,18 @@ func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics *metric.Me
 
 		aggregationParams, err = initAggregation(*cfg.Aggregation, upstreams)
 		if err != nil {
-			return flow{}, err
+			return flow{}, fmt.Errorf("init aggregation: %w", err)
 		}
+	}
+
+	plugins, err := initPlugins(cfg.Plugins, log)
+	if err != nil {
+		return flow{}, fmt.Errorf("init plugins: %w", err)
+	}
+
+	middlewares, err := initMiddlewares(cfg.Middlewares, log)
+	if err != nil {
+		return flow{}, fmt.Errorf("init middlewares: %w", err)
 	}
 
 	return flow{
@@ -234,8 +244,8 @@ func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics *metric.Me
 		aggregation:          aggregationParams,
 		maxParallelUpstreams: cfg.MaxParallelUpstreams,
 		upstreams:            upstreams,
-		plugins:              initPlugins(cfg.Plugins, log),
-		middlewares:          initMiddlewares(cfg.Middlewares, log),
+		plugins:              plugins,
+		middlewares:          middlewares,
 		passthrough:          cfg.Passthrough,
 
 		sem: semaphore.NewWeighted(cfg.MaxParallelUpstreams),
