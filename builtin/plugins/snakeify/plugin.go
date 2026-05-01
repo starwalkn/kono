@@ -30,7 +30,7 @@ func (p *Plugin) Type() sdk.PluginType {
 	return sdk.PluginTypeResponse
 }
 
-func (p *Plugin) Init(_ map[string]interface{}) {}
+func (p *Plugin) Init(_ map[string]interface{}) error { return nil }
 
 func (p *Plugin) Execute(ctx sdk.Context) error {
 	if ctx.Response() == nil || ctx.Response().Body == nil {

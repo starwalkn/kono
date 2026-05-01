@@ -34,7 +34,7 @@ type PluginInfo struct {
 // with the exact same Go version as the gateway binary.
 type Plugin interface {
 	Info() PluginInfo
-	Init(cfg map[string]interface{})
+	Init(cfg map[string]interface{}) error
 	Type() PluginType
 	Execute(ctx Context) error
 }

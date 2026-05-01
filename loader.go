@@ -108,7 +108,9 @@ func loadPlugin(path string, cfg map[string]interface{}, log *zap.Logger) (sdk.P
 		return nil, fmt.Errorf("plugin factory for path %q returned nil", path)
 	}
 
-	p.Init(cfg)
+	if err = p.Init(cfg); err != nil {
+		return nil, fmt.Errorf("init plugin %s: %w", p.Info().Name, err)
+	}
 
 	return p, nil
 }
@@ -124,7 +126,7 @@ func loadMiddleware(path string, cfg map[string]interface{}, log *zap.Logger) (s
 		return nil, fmt.Errorf("middleware factory for path %q returned nil", path)
 	}
 
-	if err := mw.Init(cfg); err != nil {
+	if err = mw.Init(cfg); err != nil {
 		return nil, fmt.Errorf("init middleware %s: %w", mw.Name(), err)
 	}
 

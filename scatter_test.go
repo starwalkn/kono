@@ -20,7 +20,7 @@ import (
 	"github.com/starwalkn/kono/internal/circuitbreaker"
 )
 
-const defaultMaxParallel = 10
+const defaultParallelUpstreams = 10
 
 func newTestUpstream(host string, opts ...func(*httpUpstream)) *httpUpstream {
 	u := &httpUpstream{
@@ -85,10 +85,10 @@ func withCircuitBreaker(cb *circuitbreaker.CircuitBreaker) func(*httpUpstream) {
 	return func(u *httpUpstream) { u.circuitBreaker = cb }
 }
 
-func newTestFlow(upstreams []upstream, maxParallel int64) *flow {
+func newTestFlow(upstreams []upstream, parallelUpstreams int64) *flow {
 	return &flow{
 		upstreams: upstreams,
-		sem:       semaphore.NewWeighted(maxParallel),
+		sem:       semaphore.NewWeighted(parallelUpstreams),
 	}
 }
 
@@ -115,7 +115,7 @@ func TestScatter_TwoUpstreams_BothSucceed(t *testing.T) {
 	flow := newTestFlow([]upstream{
 		newTestUpstream(serverA.URL),
 		newTestUpstream(serverB.URL),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -135,7 +135,7 @@ func TestScatter_PostRequest_BodyForwarded(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withMethod(http.MethodPost)),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("hello"))
 	results := newTestScatter().scatter(flow, req)
@@ -148,7 +148,7 @@ func TestScatter_PostRequest_BodyForwarded(t *testing.T) {
 func TestScatter_BodyExceedsMaxSize_ReturnsNil(t *testing.T) {
 	flow := newTestFlow([]upstream{
 		newTestUpstream("http://localhost"),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	oversizedBody := bytes.Repeat([]byte("x"), maxBodySize+1)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
@@ -171,7 +171,7 @@ func TestScatter_ForwardQueryAndHeaders(t *testing.T) {
 			withForwardQueries("foo"),
 			withForwardHeaders("X-Test"),
 		),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	req := httptest.NewRequest(http.MethodGet, "/?foo=bar", nil)
 	req.Header.Set("X-Test", "baz")
@@ -189,7 +189,7 @@ func TestScatter_ForwardParams_AddedToQuery(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withForwardParams("user_id")),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("user_id", "42")
@@ -213,7 +213,7 @@ func TestScatter_ExpandPathParams_InUpstreamPath(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withPath("/orders/{order_id}")),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("order_id", "99")
@@ -239,7 +239,7 @@ func TestScatter_Policy_RequireBody_ViolatedOnEmptyResponse(t *testing.T) {
 	flow := newTestFlow([]upstream{
 		newTestUpstream(serverWithBody.URL, withPolicy(upstreamPolicy{requireBody: true})),
 		newTestUpstream(serverNoBody.URL, withPolicy(upstreamPolicy{requireBody: true})),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -258,7 +258,7 @@ func TestScatter_Policy_AllowedStatuses_ViolatedOnUnexpectedStatus(t *testing.T)
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withPolicy(upstreamPolicy{allowedStatuses: []int{http.StatusOK}})),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -274,7 +274,7 @@ func TestScatter_Policy_MaxResponseBodySize_Exceeded(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withPolicy(upstreamPolicy{maxResponseBodySize: 10})),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -291,7 +291,7 @@ func TestScatter_UpstreamTimeout_ReturnsTimeoutKind(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withTimeout(100*time.Millisecond)),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -320,7 +320,7 @@ func TestScatter_Retry_SucceedsAfterTwoFailures(t *testing.T) {
 				backoffDelay:    10 * time.Millisecond,
 			},
 		})),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -348,7 +348,7 @@ func TestScatter_Retry_ExhaustsMaxRetries(t *testing.T) {
 				backoffDelay:    10 * time.Millisecond,
 			},
 		})),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	results := newTestScatter().scatter(flow, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -373,7 +373,7 @@ func TestScatter_CircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withCircuitBreaker(cb)),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	d := newTestScatter()
 
@@ -413,7 +413,7 @@ func TestScatter_CircuitBreaker_ClosesAfterReset(t *testing.T) {
 
 	flow := newTestFlow([]upstream{
 		newTestUpstream(server.URL, withCircuitBreaker(cb)),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	d := newTestScatter()
 
@@ -479,7 +479,7 @@ func TestScatter_LoadBalancer_LeastConns_PrefersFastServer(t *testing.T) {
 			withHosts(serverA.URL, serverB.URL),
 			withLBMode(lbModeLeastConns, 2),
 		),
-	}, defaultMaxParallel)
+	}, defaultParallelUpstreams)
 
 	d := newTestScatter()
 
@@ -517,7 +517,7 @@ func TestScatter_Semaphore_LimitsParallelism(t *testing.T) {
 	}))
 	defer server.Close()
 
-	const maxParallel = 2
+	const parallelUpstreams = 2
 	const upstreamCount = 6
 
 	upstreams := make([]upstream, upstreamCount)
@@ -526,9 +526,9 @@ func TestScatter_Semaphore_LimitsParallelism(t *testing.T) {
 	}
 
 	newTestScatter().scatter(
-		newTestFlow(upstreams, maxParallel),
+		newTestFlow(upstreams, parallelUpstreams),
 		httptest.NewRequest(http.MethodGet, "/", nil),
 	)
 
-	assert.LessOrEqual(t, maxConcurrent.Load(), int32(maxParallel))
+	assert.LessOrEqual(t, maxConcurrent.Load(), int32(parallelUpstreams))
 }

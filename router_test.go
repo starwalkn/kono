@@ -56,7 +56,7 @@ type mockPlugin struct {
 	fn   func(sdk.Context)
 }
 
-func (m *mockPlugin) Init(_ map[string]interface{}) {}
+func (m *mockPlugin) Init(_ map[string]interface{}) error { return nil }
 func (m *mockPlugin) Info() sdk.PluginInfo {
 	return sdk.PluginInfo{
 		Name:        m.name,

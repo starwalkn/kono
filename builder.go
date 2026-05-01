@@ -239,16 +239,16 @@ func compileFlow(cfg FlowConfig, trustedProxies []*net.IPNet, metrics *metric.Me
 	}
 
 	return flow{
-		path:                 cfg.Path,
-		method:               cfg.Method,
-		aggregation:          aggregationParams,
-		maxParallelUpstreams: cfg.MaxParallelUpstreams,
-		upstreams:            upstreams,
-		plugins:              plugins,
-		middlewares:          middlewares,
-		passthrough:          cfg.Passthrough,
+		path:              cfg.Path,
+		method:            cfg.Method,
+		aggregation:       aggregationParams,
+		parallelUpstreams: cfg.ParallelUpstreams,
+		upstreams:         upstreams,
+		plugins:           plugins,
+		middlewares:       middlewares,
+		passthrough:       cfg.Passthrough,
 
-		sem: semaphore.NewWeighted(cfg.MaxParallelUpstreams),
+		sem: semaphore.NewWeighted(cfg.ParallelUpstreams),
 	}, nil
 }
 

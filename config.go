@@ -15,7 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// parallelismMultiplier scales MaxParallelUpstreams relative to runtime.NumCPU()
+// parallelismMultiplier scales ParallelUpstreams relative to runtime.NumCPU()
 // when no explicit value is configured.
 const parallelismMultiplier = 2
 
@@ -83,8 +83,8 @@ type FlowConfig struct {
 	Method      string `yaml:"method" validate:"required,oneof=GET POST PUT PATCH DELETE HEAD OPTIONS"`
 	Passthrough bool   `yaml:"passthrough"`
 
-	// MaxParallelUpstreams defaults to 2×NumCPU when unset or zero.
-	MaxParallelUpstreams int64 `yaml:"max_parallel_upstreams"`
+	// ParallelUpstreams defaults to 2×NumCPU when unset or zero.
+	ParallelUpstreams int64 `yaml:"parallel_upstreams"`
 
 	Aggregation *AggregationConfig `yaml:"aggregation"  validate:"required_if=Passthrough false"`
 	Upstreams   []UpstreamConfig   `yaml:"upstreams"    validate:"required,min=1,dive,required"`
@@ -231,8 +231,8 @@ func LoadConfig(path string) (Config, error) {
 func applyDynamicDefaults(cfg *Config) {
 	for i := range cfg.Gateway.Routing.Flows {
 		f := &cfg.Gateway.Routing.Flows[i]
-		if f.MaxParallelUpstreams < 1 {
-			f.MaxParallelUpstreams = int64(parallelismMultiplier * runtime.NumCPU())
+		if f.ParallelUpstreams < 1 {
+			f.ParallelUpstreams = int64(parallelismMultiplier * runtime.NumCPU())
 		}
 	}
 }
