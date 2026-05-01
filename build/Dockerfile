@@ -16,16 +16,19 @@ RUN make all GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 # Stage 2: Final minimal image
 FROM debian:12-slim AS runtime
 
-WORKDIR /app
-
 COPY --from=builder /app/.bin/kono /usr/local/bin/kono
 
 COPY --from=builder /app/build/plugins /usr/local/lib/kono/plugins
 COPY --from=builder /app/build/middlewares /usr/local/lib/kono/middlewares
 
+RUN groupadd -r -g 1000 kono \
+    && useradd -r -u 1000 -g kono -s /sbin/nologin kono
+
 EXPOSE 7805/tcp
 
 STOPSIGNAL SIGTERM
+
+USER kono:kono
 
 ENTRYPOINT ["kono"]
 CMD ["serve"]
