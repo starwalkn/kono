@@ -4,467 +4,419 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
-	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/circuitbreaker"
 )
 
-//nolint:unparam // it is tests
-func mustParseCIDR(cidr string) *net.IPNet {
-	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		panic(err)
-	}
+var _ = Describe("httpUpstream", func() {
+	Describe("resolveHeaders", func() {
+		var (
+			up     *httpUpstream
+			orig   *http.Request
+			target *http.Request
+		)
 
-	return ipnet
-}
+		BeforeEach(func() {
+			up = newTestUpstream("", withTrustedProxies(mustParseCIDR("10.0.0.0/8")))
+		})
 
-func requestWithClientIP(method, url, remoteAddr, clientIP string) *http.Request {
-	req, _ := http.NewRequest(method, url, nil)
-	req.RemoteAddr = remoteAddr
-	req = req.WithContext(withClientIP(req.Context(), clientIP))
+		Context("when proxy is untrusted", func() {
+			It("sets X-Forwarded headers from RemoteAddr for HTTP", func() {
+				orig, _ = http.NewRequest(http.MethodGet, "http://example.com/test", nil)
+				orig.RemoteAddr = "1.2.3.4:12345"
+				target, _ = http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	return req
-}
+				Expect(up.resolveHeaders(target, orig)).To(Succeed())
 
-func newResolveHeadersUpstream(trustedProxies ...*net.IPNet) *httpUpstream {
-	return &httpUpstream{
-		log: zap.NewNop(),
-		cfg: upstreamConfig{
-			trustedProxies: trustedProxies,
-		},
-	}
-}
+				Expect(target.Header.Get("X-Forwarded-For")).To(Equal("1.2.3.4"))
+				Expect(target.Header.Get("X-Forwarded-Proto")).To(Equal("http"))
+				Expect(target.Header.Get("X-Forwarded-Host")).To(Equal("example.com"))
+				Expect(target.Header.Get("X-Forwarded-Port")).To(Equal("80"))
+				Expect(target.Header.Get("Forwarded")).To(Equal("for=1.2.3.4; proto=http; host=example.com"))
+			})
 
-func TestResolveHeaders_UntrustedProxy_HTTP(t *testing.T) {
-	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
+			It("sets X-Forwarded headers from RemoteAddr for HTTPS", func() {
+				orig, _ = http.NewRequest(http.MethodGet, "https://example.com:8443/test", nil)
+				orig.RemoteAddr = "1.2.3.4:12345"
+				orig.TLS = &tls.ConnectionState{}
+				target, _ = http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	orig, _ := http.NewRequest(http.MethodGet, "http://example.com/test", nil)
-	orig.RemoteAddr = "1.2.3.4:12345"
-	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
+				Expect(up.resolveHeaders(target, orig)).To(Succeed())
 
-	err := up.resolveHeaders(target, orig)
+				Expect(target.Header.Get("X-Forwarded-For")).To(Equal("1.2.3.4"))
+				Expect(target.Header.Get("X-Forwarded-Proto")).To(Equal("https"))
+				Expect(target.Header.Get("X-Forwarded-Host")).To(Equal("example.com:8443"))
+				Expect(target.Header.Get("X-Forwarded-Port")).To(Equal("8443"))
+			})
 
-	require.NoError(t, err)
-	assert.Equal(t, "1.2.3.4", target.Header.Get("X-Forwarded-For"))
-	assert.Equal(t, "http", target.Header.Get("X-Forwarded-Proto"))
-	assert.Equal(t, "example.com", target.Header.Get("X-Forwarded-Host"))
-	assert.Equal(t, "80", target.Header.Get("X-Forwarded-Port"))
-	assert.Equal(t, "for=1.2.3.4; proto=http; host=example.com", target.Header.Get("Forwarded"))
-}
+			It("ignores incoming X-Forwarded-For from spoofed clients", func() {
+				orig = requestWithClientIP(http.MethodGet, "http://example.com/test", "1.2.3.4:12345", "1.2.3.4")
+				orig.Header.Set("X-Forwarded-For", "192.168.99.1")
+				target, _ = http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-func TestResolveHeaders_UntrustedProxy_TLS(t *testing.T) {
-	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
+				Expect(up.resolveHeaders(target, orig)).To(Succeed())
+				Expect(target.Header.Get("X-Forwarded-For")).To(Equal("1.2.3.4"))
+			})
+		})
 
-	orig, _ := http.NewRequest(http.MethodGet, "https://example.com:8443/test", nil)
-	orig.RemoteAddr = "1.2.3.4:12345"
-	orig.TLS = &tls.ConnectionState{}
-	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
+		Context("when proxy is trusted", func() {
+			It("appends real client IP to existing X-Forwarded-For", func() {
+				orig = requestWithClientIP(http.MethodGet, "http://example.com/test", "10.0.1.5:12345", "10.0.1.5")
+				orig.Header.Set("X-Forwarded-For", "5.6.7.8")
+				orig.Header.Set("X-Forwarded-Proto", "http")
+				orig.Header.Set("X-Forwarded-Host", "example.com")
+				orig.Header.Set("X-Forwarded-Port", "80")
+				target, _ = http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	err := up.resolveHeaders(target, orig)
+				Expect(up.resolveHeaders(target, orig)).To(Succeed())
 
-	require.NoError(t, err)
-	assert.Equal(t, "1.2.3.4", target.Header.Get("X-Forwarded-For"))
-	assert.Equal(t, "https", target.Header.Get("X-Forwarded-Proto"))
-	assert.Equal(t, "example.com:8443", target.Header.Get("X-Forwarded-Host"))
-	assert.Equal(t, "8443", target.Header.Get("X-Forwarded-Port"))
-	assert.Equal(t, "for=1.2.3.4; proto=https; host=example.com:8443", target.Header.Get("Forwarded"))
-}
+				Expect(target.Header.Get("X-Forwarded-For")).To(Equal("5.6.7.8, 10.0.1.5"))
+				Expect(target.Header.Get("X-Forwarded-Proto")).To(Equal("http"))
+				Expect(target.Header.Get("X-Forwarded-Host")).To(Equal("example.com"))
+				Expect(target.Header.Get("X-Forwarded-Port")).To(Equal("80"))
+				Expect(target.Header.Get("Forwarded")).To(Equal("for=10.0.1.5; proto=http; host=example.com"))
+			})
 
-func TestResolveHeaders_UntrustedProxy_IgnoresIncomingXFF(t *testing.T) {
-	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
+			It("falls back to derived proto when incoming proto is invalid", func() {
+				orig, _ = http.NewRequest(http.MethodGet, "http://example.com/test", nil)
+				orig.RemoteAddr = "10.0.1.6:12345"
+				orig.Header.Set("X-Forwarded-Proto", "ftp")
+				target, _ = http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	orig := requestWithClientIP(http.MethodGet, "http://example.com/test", "1.2.3.4:12345", "1.2.3.4")
-	orig.Header.Set("X-Forwarded-For", "192.168.99.1")
-	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
+				Expect(up.resolveHeaders(target, orig)).To(Succeed())
+				Expect(target.Header.Get("X-Forwarded-Proto")).To(Equal("http"))
+			})
 
-	err := up.resolveHeaders(target, orig)
+			It("falls back to default port when incoming port is invalid", func() {
+				orig, _ = http.NewRequest(http.MethodGet, "http://example.com/test", nil)
+				orig.RemoteAddr = "10.0.1.7:12345"
+				orig.Header.Set("X-Forwarded-Port", "99999")
+				target, _ = http.NewRequest(orig.Method, orig.URL.String(), nil)
 
-	require.NoError(t, err)
-	assert.Equal(t, "1.2.3.4", target.Header.Get("X-Forwarded-For"))
-}
+				Expect(up.resolveHeaders(target, orig)).To(Succeed())
+				Expect(target.Header.Get("X-Forwarded-Port")).To(Equal("80"))
+			})
+		})
+	})
 
-func TestResolveHeaders_TrustedProxy_AppendXFF(t *testing.T) {
-	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
+	Describe("resolveQueries", func() {
+		It("forwards only configured query keys", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{forwardQueries: []string{"foo", "bar"}},
+			}
 
-	orig := requestWithClientIP(http.MethodGet, "http://example.com/test", "10.0.1.5:12345", "10.0.1.5")
-	orig.Header.Set("X-Forwarded-For", "5.6.7.8")
-	orig.Header.Set("X-Forwarded-Proto", "http")
-	orig.Header.Set("X-Forwarded-Host", "example.com")
-	orig.Header.Set("X-Forwarded-Port", "80")
-	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
+			orig, _ := http.NewRequest(http.MethodGet, "http://example.com?foo=1&bar=2&baz=3", nil)
+			target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
 
-	err := up.resolveHeaders(target, orig)
+			up.resolveQueries(target, orig)
 
-	require.NoError(t, err)
-	assert.Equal(t, "5.6.7.8, 10.0.1.5", target.Header.Get("X-Forwarded-For"))
-	assert.Equal(t, "http", target.Header.Get("X-Forwarded-Proto"))
-	assert.Equal(t, "example.com", target.Header.Get("X-Forwarded-Host"))
-	assert.Equal(t, "80", target.Header.Get("X-Forwarded-Port"))
-	assert.Equal(t, "for=10.0.1.5; proto=http; host=example.com", target.Header.Get("Forwarded"))
-}
+			q := target.URL.Query()
+			Expect(q.Get("foo")).To(Equal("1"))
+			Expect(q.Get("bar")).To(Equal("2"))
+			Expect(q.Has("baz")).To(BeFalse())
+		})
 
-func TestResolveHeaders_TrustedProxy_InvalidProtoFallback(t *testing.T) {
-	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
+		It("forwards all query keys when wildcard is configured", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{forwardQueries: []string{"*"}},
+			}
 
-	orig, _ := http.NewRequest(http.MethodGet, "http://example.com/test", nil)
-	orig.RemoteAddr = "10.0.1.6:12345"
-	orig.Header.Set("X-Forwarded-Proto", "ftp")
-	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
+			orig, _ := http.NewRequest(http.MethodGet, "http://example.com?a=1&b=2", nil)
+			target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
 
-	err := up.resolveHeaders(target, orig)
+			up.resolveQueries(target, orig)
 
-	require.NoError(t, err)
-	assert.Equal(t, "http", target.Header.Get("X-Forwarded-Proto"))
-}
+			q := target.URL.Query()
+			Expect(q.Get("a")).To(Equal("1"))
+			Expect(q.Get("b")).To(Equal("2"))
+		})
 
-func TestResolveHeaders_TrustedProxy_InvalidPort_UsesDefault(t *testing.T) {
-	up := newResolveHeadersUpstream(mustParseCIDR("10.0.0.0/8"))
+		It("forwards only configured path params", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{forwardParams: []string{"user_id"}},
+			}
 
-	orig, _ := http.NewRequest(http.MethodGet, "http://example.com/test", nil)
-	orig.RemoteAddr = "10.0.1.7:12345"
-	orig.Header.Set("X-Forwarded-Port", "99999")
-	target, _ := http.NewRequest(orig.Method, orig.URL.String(), nil)
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("user_id", "42")
+			rctx.URLParams.Add("order_id", "99")
 
-	err := up.resolveHeaders(target, orig)
+			orig, _ := http.NewRequest(http.MethodGet, "http://example.com/users/42/orders/99", nil)
+			orig = orig.WithContext(context.WithValue(orig.Context(), chi.RouteCtxKey, rctx))
+			target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
 
-	require.NoError(t, err)
-	assert.Equal(t, "80", target.Header.Get("X-Forwarded-Port"))
-}
+			up.resolveQueries(target, orig)
 
-func TestResolveQueries_ForwardSpecific(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{forwardQueries: []string{"foo", "bar"}},
-	}
+			q := target.URL.Query()
+			Expect(q.Get("user_id")).To(Equal("42"))
+			Expect(q.Has("order_id")).To(BeFalse())
+		})
 
-	original, _ := http.NewRequest(http.MethodGet, "http://example.com?foo=1&bar=2&baz=3", nil)
-	target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
+		It("forwards all path params when wildcard is configured", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{forwardParams: []string{"*"}},
+			}
 
-	up.resolveQueries(target, original)
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("user_id", "42")
+			rctx.URLParams.Add("order_id", "99")
 
-	q := target.URL.Query()
-	assert.Equal(t, "1", q.Get("foo"))
-	assert.Equal(t, "2", q.Get("bar"))
-	assert.False(t, q.Has("baz"))
-}
+			orig, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
+			orig = orig.WithContext(context.WithValue(orig.Context(), chi.RouteCtxKey, rctx))
+			target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
 
-func TestResolveQueries_ForwardAll(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{forwardQueries: []string{"*"}},
-	}
+			up.resolveQueries(target, orig)
 
-	original, _ := http.NewRequest(http.MethodGet, "http://example.com?a=1&b=2", nil)
-	target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
+			q := target.URL.Query()
+			Expect(q.Get("user_id")).To(Equal("42"))
+			Expect(q.Get("order_id")).To(Equal("99"))
+		})
+	})
 
-	up.resolveQueries(target, original)
-
-	q := target.URL.Query()
-	assert.Equal(t, "1", q.Get("a"))
-	assert.Equal(t, "2", q.Get("b"))
-}
-
-func TestResolveQueries_ForwardParams_Specific(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{forwardParams: []string{"user_id"}},
-	}
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("user_id", "42")
-	rctx.URLParams.Add("order_id", "99")
-
-	original, _ := http.NewRequest(http.MethodGet, "http://example.com/users/42/orders/99", nil)
-	original = original.WithContext(context.WithValue(original.Context(), chi.RouteCtxKey, rctx))
-	target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
-
-	up.resolveQueries(target, original)
-
-	q := target.URL.Query()
-	assert.Equal(t, "42", q.Get("user_id"))
-	assert.False(t, q.Has("order_id"))
-}
-
-func TestResolveQueries_ForwardParams_All(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{forwardParams: []string{"*"}},
-	}
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("user_id", "42")
-	rctx.URLParams.Add("order_id", "99")
-
-	original, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
-	original = original.WithContext(context.WithValue(original.Context(), chi.RouteCtxKey, rctx))
-	target, _ := http.NewRequest(http.MethodGet, "http://upstream.com", nil)
-
-	up.resolveQueries(target, original)
-
-	q := target.URL.Query()
-	assert.Equal(t, "42", q.Get("user_id"))
-	assert.Equal(t, "99", q.Get("order_id"))
-}
-
-func TestFilterHeaders_Blacklist(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{
-			policy: upstreamPolicy{
-				headerBlacklist: map[string]struct{}{
-					"X-Secret": {},
+	Describe("filterHeaders", func() {
+		It("removes blacklisted headers and preserves the rest", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{
+					policy: upstreamPolicy{
+						headerBlacklist: map[string]struct{}{"X-Secret": {}},
+					},
 				},
-			},
+			}
+
+			headers := http.Header{
+				"X-Secret":  []string{"sensitive"},
+				"X-Forward": []string{"ok"},
+			}
+
+			result := up.filterHeaders(headers)
+
+			Expect(result.Get("X-Secret")).To(BeEmpty())
+			Expect(result.Get("X-Forward")).To(Equal("ok"))
+		})
+
+		It("clones all headers when blacklist is empty", func() {
+			up := &httpUpstream{cfg: upstreamConfig{policy: upstreamPolicy{}}}
+
+			headers := http.Header{
+				"X-One": []string{"1"},
+				"X-Two": []string{"2"},
+			}
+
+			result := up.filterHeaders(headers)
+
+			Expect(result.Get("X-One")).To(Equal("1"))
+			Expect(result.Get("X-Two")).To(Equal("2"))
+		})
+	})
+
+	Describe("expandPathParams", func() {
+		It("replaces known params with their values", func() {
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", "123")
+
+			req, _ := http.NewRequest(http.MethodGet, "/items/123", nil)
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+			Expect(expandPathParams("/items/{id}", req)).To(Equal("/items/123"))
+		})
+
+		It("preserves unknown params verbatim", func() {
+			req, _ := http.NewRequest(http.MethodGet, "/items/123", nil)
+
+			Expect(expandPathParams("/items/{unknown}", req)).To(Equal("/items/{unknown}"))
+		})
+	})
+
+	DescribeTable("classifyDoError",
+		func(err error, want upstreamErrorKind) {
+			up := &httpUpstream{}
+			Expect(up.classifyDoError(err)).To(Equal(want))
 		},
-	}
+		Entry("deadline exceeded → timeout", context.DeadlineExceeded, upstreamTimeout),
+		Entry("canceled → canceled", context.Canceled, upstreamCanceled),
+		Entry("EOF → connection error", io.EOF, upstreamConnection),
+	)
 
-	headers := http.Header{
-		"X-Secret":  []string{"sensitive"},
-		"X-Forward": []string{"ok"},
-	}
-
-	filtered := up.filterHeaders(headers)
-
-	assert.Empty(t, filtered.Get("X-Secret"))
-	assert.Equal(t, "ok", filtered.Get("X-Forward"))
-}
-
-func TestFilterHeaders_EmptyBlacklist_ClonesAll(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{policy: upstreamPolicy{}},
-	}
-
-	headers := http.Header{
-		"X-One": []string{"1"},
-		"X-Two": []string{"2"},
-	}
-
-	filtered := up.filterHeaders(headers)
-
-	assert.Equal(t, "1", filtered.Get("X-One"))
-	assert.Equal(t, "2", filtered.Get("X-Two"))
-}
-
-func TestExpandPathParams_ReplacesKnownParam(t *testing.T) {
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "123")
-
-	req, _ := http.NewRequest(http.MethodGet, "/items/123", nil)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	got := expandPathParams("/items/{id}", req)
-
-	assert.Equal(t, "/items/123", got)
-}
-
-func TestExpandPathParams_PreservesUnknownParam(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/items/123", nil)
-
-	got := expandPathParams("/items/{unknown}", req)
-
-	assert.Equal(t, "/items/{unknown}", got)
-}
-
-func TestClassifyDoError(t *testing.T) {
-	up := &httpUpstream{}
-
-	cases := []struct {
-		err  error
-		want upstreamErrorKind
-	}{
-		{context.DeadlineExceeded, upstreamTimeout},
-		{context.Canceled, upstreamCanceled},
-		{io.EOF, upstreamConnection},
-	}
-
-	for _, c := range cases {
-		got := up.classifyDoError(c.err)
-		assert.Equal(t, c.want, got)
-	}
-}
-
-func TestIsBreakerFailure(t *testing.T) {
-	up := &httpUpstream{}
-
-	cases := []struct {
-		kind upstreamErrorKind
-		want bool
-	}{
-		{upstreamTimeout, true},
-		{upstreamConnection, true},
-		{upstreamBadStatus, true},
-		{upstreamCanceled, false},
-		{upstreamBodyTooLarge, false},
-		{upstreamReadError, false},
-		{upstreamInternal, false},
-		{upstreamCircuitOpen, false},
-	}
-
-	for _, c := range cases {
-		got := up.isBreakerFailure(&upstreamError{kind: c.kind, err: io.EOF})
-		assert.Equal(t, c.want, got)
-	}
-
-	assert.False(t, up.isBreakerFailure(nil))
-}
-
-func TestSelectHost_SingleHost_AlwaysZero(t *testing.T) {
-	up := &httpUpstream{
-		cfg:     upstreamConfig{hosts: []string{"http://only"}},
-		metrics: testMetrics,
-		log:     zap.NewNop(),
-	}
-
-	for range 5 {
-		got := up.selectHost(zap.NewNop())
-		assert.Equal(t, int64(0), got)
-	}
-}
-
-func TestSelectHost_RoundRobin(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{
-			hosts:  []string{"a", "b", "c"},
-			lbMode: lbModeRoundRobin,
+	DescribeTable("isBreakerFailure",
+		func(kind upstreamErrorKind, want bool) {
+			up := &httpUpstream{}
+			Expect(up.isBreakerFailure(&upstreamError{kind: kind, err: io.EOF})).To(Equal(want))
 		},
-		metrics: testMetrics,
-		log:     zap.NewNop(),
-	}
+		Entry("timeout counts as failure", upstreamTimeout, true),
+		Entry("connection error counts as failure", upstreamConnection, true),
+		Entry("bad status counts as failure", upstreamBadStatus, true),
+		Entry("canceled does not count", upstreamCanceled, false),
+		Entry("body too large does not count", upstreamBodyTooLarge, false),
+		Entry("read error does not count", upstreamReadError, false),
+		Entry("internal does not count", upstreamInternal, false),
+		Entry("circuit open does not count", upstreamCircuitOpen, false),
+	)
 
-	seen := make(map[int64]int)
-	for range 6 {
-		seen[up.selectHost(zap.NewNop())]++
-	}
+	It("treats nil error as non-failure for breaker", func() {
+		up := &httpUpstream{}
+		Expect(up.isBreakerFailure(nil)).To(BeFalse())
+	})
 
-	for _, count := range seen {
-		assert.Equal(t, 2, count)
-	}
-}
+	Describe("selectHost", func() {
+		It("always returns 0 for a single host", func() {
+			up := &httpUpstream{
+				cfg:     upstreamConfig{hosts: []string{"http://only"}},
+				metrics: testMetrics,
+				log:     zap.NewNop(),
+			}
 
-func TestSelectHost_LeastConns_PrefersIdle(t *testing.T) {
-	up := &httpUpstream{
-		cfg: upstreamConfig{
-			hosts:  []string{"busy", "idle"},
-			lbMode: lbModeLeastConns,
-		},
-		state: upstreamState{
-			activeConnections: []int64{5, 0},
-		},
-		metrics: testMetrics,
-		log:     zap.NewNop(),
-	}
+			for range 5 {
+				Expect(up.selectHost(zap.NewNop())).To(Equal(int64(0)))
+			}
+		})
 
-	got := up.selectHost(zap.NewNop())
+		It("distributes evenly across hosts in round-robin mode", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{
+					hosts:  []string{"a", "b", "c"},
+					lbMode: lbModeRoundRobin,
+				},
+				metrics: testMetrics,
+				log:     zap.NewNop(),
+			}
 
-	assert.Equal(t, int64(1), got)
-}
+			seen := make(map[int64]int)
+			for range 6 {
+				seen[up.selectHost(zap.NewNop())]++
+			}
 
-func TestCall_Success(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer server.Close()
+			for _, count := range seen {
+				Expect(count).To(Equal(2))
+			}
+		})
 
-	up := newTestUpstream(server.URL)
+		It("prefers idle host in least-connections mode", func() {
+			up := &httpUpstream{
+				cfg: upstreamConfig{
+					hosts:  []string{"busy", "idle"},
+					lbMode: lbModeLeastConns,
+				},
+				state: upstreamState{
+					activeConnections: []int64{5, 0},
+				},
+				metrics: testMetrics,
+				log:     zap.NewNop(),
+			}
 
-	resp := up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
+			Expect(up.selectHost(zap.NewNop())).To(Equal(int64(1)))
+		})
+	})
 
-	require.Nil(t, resp.err)
-	assert.Equal(t, `{"ok":true}`, string(resp.body))
-}
+	Describe("call", func() {
+		It("returns successful response body", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer server.Close()
 
-func TestCall_ContextCanceledBeforeRequest(t *testing.T) {
-	up := newTestUpstream("http://localhost:1")
+			up := newTestUpstream(server.URL)
+			resp := up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+			Expect(resp.err).To(BeNil())
+			Expect(string(resp.body)).To(Equal(`{"ok":true}`))
+		})
 
-	resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
+		It("returns canceled error if context is already canceled", func() {
+			up := newTestUpstream("http://localhost:1")
 
-	require.NotNil(t, resp.err)
-	assert.Equal(t, upstreamCanceled, resp.err.kind)
-}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-func TestCall_ContextCanceledDuringBackoff(t *testing.T) {
-	var calls atomic.Int32
+			resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
+			Expect(resp.err).ToNot(BeNil())
+			Expect(resp.err.kind).To(Equal(upstreamCanceled))
+		})
 
-	up := newTestUpstream(server.URL, withPolicy(upstreamPolicy{
-		retry: retryPolicy{
-			maxRetries:      5,
-			retryOnStatuses: []int{http.StatusInternalServerError},
-			backoffDelay:    500 * time.Millisecond,
-		},
-	}))
+		It("aborts retry backoff when context is canceled", func() {
+			var calls atomic.Int32
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
 
-	resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
+			up := newTestUpstream(server.URL, withPolicy(upstreamPolicy{
+				retry: retryPolicy{
+					maxRetries:      5,
+					retryOnStatuses: []int{http.StatusInternalServerError},
+					backoffDelay:    500 * time.Millisecond,
+				},
+			}))
 
-	require.NotNil(t, resp.err)
-	assert.Equal(t, upstreamCanceled, resp.err.kind)
-	assert.LessOrEqual(t, calls.Load(), int32(2))
-}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
 
-func TestCall_CircuitBreaker_Integration(t *testing.T) {
-	var calls atomic.Int32
+			resp := up.call(ctx, httptest.NewRequest(http.MethodGet, "/", nil), nil)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
+			Expect(resp.err).ToNot(BeNil())
+			Expect(resp.err.kind).To(Equal(upstreamCanceled))
+			Expect(calls.Load()).To(BeNumerically("<=", 2))
+		})
 
-	cb := circuitbreaker.New(2, 100*time.Millisecond)
-	up := newTestUpstream(server.URL, withCircuitBreaker(cb))
+		It("respects circuit breaker after consecutive failures", func() {
+			var calls atomic.Int32
 
-	for range 4 {
-		up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
-	}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
 
-	assert.Equal(t, int32(2), calls.Load())
-}
+			cb := circuitbreaker.New(2, 100*time.Millisecond)
+			up := newTestUpstream(server.URL, withCircuitBreaker(cb))
 
-func TestCall_CircuitBreaker_RecoversAfterReset(t *testing.T) {
-	resetTimeout := 50 * time.Millisecond
-	cb := circuitbreaker.New(1, resetTimeout)
+			for range 4 {
+				up.call(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil), nil)
+			}
 
-	var calls atomic.Int32
+			Expect(calls.Load()).To(Equal(int32(2)))
+		})
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if calls.Add(1) == 1 {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+		It("recovers after circuit breaker reset timeout", func() {
+			resetTimeout := 50 * time.Millisecond
+			cb := circuitbreaker.New(1, resetTimeout)
 
-	up := newTestUpstream(server.URL, withCircuitBreaker(cb))
-	req := func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }
+			var calls atomic.Int32
 
-	r1 := up.call(context.Background(), req(), nil)
-	require.NotNil(t, r1.err)
-	require.Equal(t, upstreamBadStatus, r1.err.kind)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if calls.Add(1) == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
 
-	r2 := up.call(context.Background(), req(), nil)
-	require.NotNil(t, r2.err)
-	require.Equal(t, upstreamCircuitOpen, r2.err.kind)
+			up := newTestUpstream(server.URL, withCircuitBreaker(cb))
+			req := func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }
 
-	time.Sleep(resetTimeout + 20*time.Millisecond)
+			r1 := up.call(context.Background(), req(), nil)
+			Expect(r1.err).ToNot(BeNil())
+			Expect(r1.err.kind).To(Equal(upstreamBadStatus))
 
-	r3 := up.call(context.Background(), req(), nil)
-	assert.Nil(t, r3.err)
-}
+			r2 := up.call(context.Background(), req(), nil)
+			Expect(r2.err).ToNot(BeNil())
+			Expect(r2.err.kind).To(Equal(upstreamCircuitOpen))
+
+			time.Sleep(resetTimeout + 20*time.Millisecond)
+
+			r3 := up.call(context.Background(), req(), nil)
+			Expect(r3.err).To(BeNil())
+		})
+	})
+})

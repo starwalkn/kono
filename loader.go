@@ -32,7 +32,10 @@ func initPlugins(cfgs []PluginConfig, log *zap.Logger) ([]sdk.Plugin, error) {
 			continue
 		}
 
-		soPath := resolveSoPath(cfg.Source, cfg.Name, cfg.Path, builtinPluginsPath)
+		soPath, err := resolveSoPath(cfg.Source, cfg.Name, cfg.Path, builtinPluginsPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve .so path: %w", err)
+		}
 
 		plugin, err := loadPlugin(soPath, cfg.Config, log)
 		if err != nil {
@@ -61,7 +64,10 @@ func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) ([]sdk.Middleware
 			continue
 		}
 
-		soPath := resolveSoPath(cfg.Source, cfg.Name, cfg.Path, builtinMiddlewaresPath)
+		soPath, err := resolveSoPath(cfg.Source, cfg.Name, cfg.Path, builtinMiddlewaresPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve .so path: %w", err)
+		}
 
 		middleware, err := loadMiddleware(soPath, cfg.Config, log)
 		if err != nil {
@@ -80,20 +86,19 @@ func initMiddlewares(cfgs []MiddlewareConfig, log *zap.Logger) ([]sdk.Middleware
 	return middlewares, nil
 }
 
-// resolveSoPath строит путь к .so файлу по source и имени.
-func resolveSoPath(source, name, filePath, builtinPath string) string {
+func resolveSoPath(source, name, filePath, builtinPath string) (string, error) {
 	switch source {
 	case sourceBuiltin:
-		return builtinPath + name + extSo
+		return builtinPath + name + extSo, nil
 	case sourceFile:
 		base := filePath
 		if !strings.HasSuffix(base, "/") {
 			base += "/"
 		}
 
-		return base + name + extSo
+		return base + name + extSo, nil
 	default:
-		panic(fmt.Sprintf("invalid source '%s'", source))
+		return "", fmt.Errorf("invalid plugin source %q", source)
 	}
 }
 

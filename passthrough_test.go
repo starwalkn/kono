@@ -1,235 +1,210 @@
 package kono
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/starwalkn/kono/sdk"
 )
 
-type mockProxyUpstream struct {
-	upstreamName string
-	proxyFn      func(w http.ResponseWriter, req *http.Request) error
-}
+var _ = Describe("Passthrough", func() {
+	Context("with a streaming SSE response", func() {
+		It("forwards body and headers without buffering", func() {
+			u := &mockProxyUpstream{
+				upstreamName: "sse",
+				proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.Header().Set("Cache-Control", "no-cache")
+					w.WriteHeader(http.StatusOK)
+					_, _ = fmt.Fprint(w, "data: hello\n\n")
+					return nil
+				},
+			}
 
-func (m *mockProxyUpstream) name() string { return m.upstreamName }
-func (m *mockProxyUpstream) call(_ context.Context, _ *http.Request, _ []byte) *upstreamResponse {
-	return &upstreamResponse{}
-}
+			r := newTestRouter([]flow{passthroughFlow("/stream", u)}, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-func (m *mockProxyUpstream) proxy(_ context.Context, w http.ResponseWriter, req *http.Request) error {
-	return m.proxyFn(w, req)
-}
+			res := rec.Result()
+			defer res.Body.Close()
+			body, _ := io.ReadAll(res.Body)
 
-func passthroughFlow(path string, u upstream, plugins ...sdk.Plugin) flow {
-	return flow{
-		path:        path,
-		method:      http.MethodGet,
-		passthrough: true,
-		upstreams:   []upstream{u},
-		plugins:     plugins,
-	}
-}
+			Expect(res.StatusCode).To(Equal(http.StatusOK))
+			Expect(res.Header.Get("Content-Type")).To(Equal("text/event-stream"))
+			Expect(res.Header.Get("Cache-Control")).To(Equal("no-cache"))
+			Expect(res.Header.Get("Content-Length")).To(BeEmpty())
+			Expect(string(body)).To(Equal("data: hello\n\n"))
+		})
+	})
 
-func TestPassthrough_Basic(t *testing.T) {
-	u := &mockProxyUpstream{
-		upstreamName: "sse",
-		proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, "data: hello\n\n")
+	Context("with multiple SSE events", func() {
+		It("forwards all events in order", func() {
+			events := "data: first\n\ndata: second\n\ndata: third\n\n"
 
-			return nil
-		},
-	}
+			u := &mockProxyUpstream{
+				upstreamName: "sse-multi",
+				proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					_, _ = fmt.Fprint(w, events)
+					return nil
+				},
+			}
 
-	r := newTestRouter([]flow{passthroughFlow("/stream", u)}, nil, nil)
+			r := newTestRouter([]flow{passthroughFlow("/events", u)}, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/events", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+			res := rec.Result()
+			defer res.Body.Close()
+			body, _ := io.ReadAll(res.Body)
 
-	res := rec.Result()
-	defer res.Body.Close()
+			Expect(res.StatusCode).To(Equal(http.StatusOK))
+			Expect(string(body)).To(Equal(events))
+			Expect(strings.Count(string(body), "data:")).To(Equal(3))
+		})
+	})
 
-	body, _ := io.ReadAll(res.Body)
+	Context("with a request plugin", func() {
+		It("runs the plugin before forwarding to upstream", func() {
+			var pluginSaw string
 
-	assert.Equal(t, http.StatusOK, res.StatusCode)
-	assert.Equal(t, "text/event-stream", res.Header.Get("Content-Type"))
-	assert.Equal(t, "no-cache", res.Header.Get("Cache-Control"))
-	assert.Empty(t, res.Header.Get("Content-Length"))
-	assert.Equal(t, "data: hello\n\n", string(body))
-}
+			plugin := &mockPlugin{
+				name: "auth",
+				typ:  sdk.PluginTypeRequest,
+				fn: func(ctx sdk.Context) {
+					ctx.Request().Header.Set("X-Auth", "injected")
+				},
+			}
 
-func TestPassthrough_RequestPluginRuns(t *testing.T) {
-	var pluginSaw string
+			u := &mockProxyUpstream{
+				upstreamName: "backend",
+				proxyFn: func(w http.ResponseWriter, req *http.Request) error {
+					pluginSaw = req.Header.Get("X-Auth")
+					w.WriteHeader(http.StatusOK)
+					return nil
+				},
+			}
 
-	plugin := &mockPlugin{
-		name: "auth",
-		typ:  sdk.PluginTypeRequest,
-		fn: func(ctx sdk.Context) {
-			ctx.Request().Header.Set("X-Auth", "injected")
-		},
-	}
+			r := newTestRouter([]flow{passthroughFlow("/plugin", u, plugin)}, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/plugin", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-	u := &mockProxyUpstream{
-		upstreamName: "backend",
-		proxyFn: func(w http.ResponseWriter, req *http.Request) error {
-			pluginSaw = req.Header.Get("X-Auth")
-			w.WriteHeader(http.StatusOK)
+			Expect(rec.Code).To(Equal(http.StatusOK))
+			Expect(pluginSaw).To(Equal("injected"))
+		})
+	})
 
-			return nil
-		},
-	}
+	Context("when upstream errors before any write", func() {
+		It("returns 502", func() {
+			u := &mockProxyUpstream{
+				upstreamName: "broken",
+				proxyFn: func(_ http.ResponseWriter, _ *http.Request) error {
+					return errors.New("upstream connection refused")
+				},
+			}
 
-	r := newTestRouter([]flow{passthroughFlow("/plugin", u, plugin)}, nil, nil)
+			r := newTestRouter([]flow{passthroughFlow("/broken", u)}, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/broken", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-	req := httptest.NewRequest(http.MethodGet, "/plugin", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusBadGateway))
+		})
+	})
 
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "injected", pluginSaw)
-}
+	Context("when upstream errors after partial write", func() {
+		It("does not panic and preserves the original status", func() {
+			u := &mockProxyUpstream{
+				upstreamName: "partial",
+				proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
+					w.WriteHeader(http.StatusOK)
+					_, _ = fmt.Fprint(w, "data: partial\n\n")
+					return errors.New("connection reset by peer")
+				},
+			}
 
-func TestPassthrough_UpstreamError_BeforeWrite(t *testing.T) {
-	u := &mockProxyUpstream{
-		upstreamName: "broken",
-		proxyFn: func(_ http.ResponseWriter, _ *http.Request) error {
-			return errors.New("upstream connection refused")
-		},
-	}
+			r := newTestRouter([]flow{passthroughFlow("/partial", u)}, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/partial", nil)
+			rec := httptest.NewRecorder()
 
-	r := newTestRouter([]flow{passthroughFlow("/broken", u)}, nil, nil)
+			Expect(func() { r.ServeHTTP(rec, req) }).ToNot(Panic())
+			Expect(rec.Code).To(Equal(http.StatusOK))
+		})
+	})
 
-	req := httptest.NewRequest(http.MethodGet, "/broken", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+	Context("with a non-proxy-capable upstream", func() {
+		It("returns 500", func() {
+			u := &stubUpstream{upstreamName: "plain"}
 
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
-}
+			r := newTestRouter([]flow{{
+				path:        "/noproxy",
+				method:      http.MethodGet,
+				passthrough: true,
+				upstreams:   []upstream{u},
+			}}, nil, nil)
 
-func TestPassthrough_UpstreamError_AfterWrite(t *testing.T) {
-	u := &mockProxyUpstream{
-		upstreamName: "partial",
-		proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, "data: partial\n\n")
+			req := httptest.NewRequest(http.MethodGet, "/noproxy", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-			return errors.New("connection reset by peer")
-		},
-	}
+			Expect(rec.Code).To(Equal(http.StatusInternalServerError))
+		})
+	})
 
-	r := newTestRouter([]flow{passthroughFlow("/partial", u)}, nil, nil)
+	Context("with multiple upstreams", func() {
+		It("returns 500 because passthrough requires exactly one", func() {
+			makeU := func(n string) upstream {
+				return &mockProxyUpstream{
+					upstreamName: n,
+					proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
+						w.WriteHeader(http.StatusOK)
+						return nil
+					},
+				}
+			}
 
-	req := httptest.NewRequest(http.MethodGet, "/partial", nil)
-	rec := httptest.NewRecorder()
+			r := newTestRouter([]flow{{
+				path:        "/multi",
+				method:      http.MethodGet,
+				passthrough: true,
+				upstreams:   []upstream{makeU("a"), makeU("b")},
+			}}, nil, nil)
 
-	assert.NotPanics(t, func() { r.ServeHTTP(rec, req) })
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
+			req := httptest.NewRequest(http.MethodGet, "/multi", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-func TestPassthrough_NonProxyCapableUpstream(t *testing.T) {
-	u := &stubUpstream{upstreamName: "plain"}
+			Expect(rec.Code).To(Equal(http.StatusInternalServerError))
+		})
+	})
 
-	f := flow{
-		path:        "/noproxy",
-		method:      http.MethodGet,
-		passthrough: true,
-		upstreams:   []upstream{u},
-	}
+	Context("with a non-200 upstream status", func() {
+		It("preserves the status code", func() {
+			u := &mockProxyUpstream{
+				upstreamName: "created",
+				proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
+					w.WriteHeader(http.StatusCreated)
+					return nil
+				},
+			}
 
-	r := newTestRouter([]flow{f}, nil, nil)
+			r := newTestRouter([]flow{passthroughFlow("/created", u)}, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/created", nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
 
-	req := httptest.NewRequest(http.MethodGet, "/noproxy", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-}
-
-func TestPassthrough_MultipleUpstreams(t *testing.T) {
-	makeU := func(n string) upstream {
-		return &mockProxyUpstream{
-			upstreamName: n,
-			proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
-				w.WriteHeader(http.StatusOK)
-				return nil
-			},
-		}
-	}
-
-	f := flow{
-		path:        "/multi",
-		method:      http.MethodGet,
-		passthrough: true,
-		upstreams:   []upstream{makeU("a"), makeU("b")},
-	}
-
-	r := newTestRouter([]flow{f}, nil, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/multi", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-}
-
-func TestPassthrough_SSEMultipleEvents(t *testing.T) {
-	events := "data: first\n\ndata: second\n\ndata: third\n\n"
-
-	u := &mockProxyUpstream{
-		upstreamName: "sse-multi",
-		proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, events)
-
-			return nil
-		},
-	}
-
-	r := newTestRouter([]flow{passthroughFlow("/events", u)}, nil, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/events", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	res := rec.Result()
-	defer res.Body.Close()
-
-	body, _ := io.ReadAll(res.Body)
-
-	require.Equal(t, http.StatusOK, res.StatusCode)
-	assert.Equal(t, events, string(body))
-	assert.Equal(t, 3, strings.Count(string(body), "data:"))
-}
-
-func TestPassthrough_StatusCodePreserved(t *testing.T) {
-	u := &mockProxyUpstream{
-		upstreamName: "created",
-		proxyFn: func(w http.ResponseWriter, _ *http.Request) error {
-			w.WriteHeader(http.StatusCreated)
-
-			return nil
-		},
-	}
-
-	r := newTestRouter([]flow{passthroughFlow("/created", u)}, nil, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/created", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusCreated, rec.Code)
-}
+			Expect(rec.Code).To(Equal(http.StatusCreated))
+		})
+	})
+})

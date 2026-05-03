@@ -18,6 +18,12 @@ Versions follow [Semantic Versioning](https://semver.org/).
   observability channels
 - `kono plugin init` CLI command to create a plugin or middleware skeleton
 
+### Changed
+
+- The gateway in docker container is now running as a non-root user
+- sdk.Plugin.Init() should now return an error
+- Used [Ginkgo](https://github.com/onsi/ginkgo) for tests
+
 ### Fixed
 
 - Passthrough flows no longer broken by `client.Timeout` (separate streamClient without timeout)
