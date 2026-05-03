@@ -145,7 +145,7 @@ var _ = Describe("Passthrough", func() {
 
 	Context("with a non-proxy-capable upstream", func() {
 		It("returns 500", func() {
-			u := &stubUpstream{upstreamName: "plain"}
+			u := &mockUpstream{upstreamName: "plain"}
 
 			r := newTestRouter([]flow{{
 				path:        "/noproxy",

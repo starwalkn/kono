@@ -3,6 +3,7 @@ package kono
 import (
 	"context"
 	"net/http"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -257,6 +258,23 @@ var _ = Describe("builder", func() {
 			Expect(agg.strategy.String()).To(Equal(cfg.Strategy))
 			Expect(agg.conflictPolicy).To(Equal(conflictPolicyFirst))
 			Expect(agg.bestEffort).To(BeTrue())
+		})
+
+		Describe("buildUpstream", func() {
+			It("successfully builds upstream from valid config", func() {
+				cfg := UpstreamConfig{
+					Name:    "",
+					Hosts:   AddrList{"test-service:7001", "test-service:7002"},
+					Path:    "/builder/test",
+					Method:  http.MethodGet,
+					Timeout: 5 * time.Second,
+				}
+
+				u := buildUpstream(cfg, nil, nil, zap.NewNop())
+
+				Expect(u).NotTo(BeNil())
+				Expect(u.name()).To(Equal("get-test-service:7001-test-service:7002"))
+			})
 		})
 	})
 })

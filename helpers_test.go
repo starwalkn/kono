@@ -32,12 +32,12 @@ func testUpstreamConfig(port string) UpstreamConfig {
 
 // ── Upstream stubs ────────────────────────────────────────────────────────────
 
-type stubUpstream struct {
+type mockUpstream struct {
 	upstreamName string
 }
 
-func (s *stubUpstream) name() string { return s.upstreamName }
-func (s *stubUpstream) call(_ context.Context, _ *http.Request, _ []byte) *upstreamResponse {
+func (s *mockUpstream) name() string { return s.upstreamName }
+func (s *mockUpstream) call(_ context.Context, _ *http.Request, _ []byte) *upstreamResponse {
 	return &upstreamResponse{}
 }
 
@@ -55,11 +55,13 @@ func (m *mockProxyUpstream) proxy(_ context.Context, w http.ResponseWriter, req 
 	return m.proxyFn(w, req)
 }
 
-func stubUpstreams(names ...string) []upstream {
+func mockUpstreams(names ...string) []upstream {
 	upstreams := make([]upstream, len(names))
+
 	for i, name := range names {
-		upstreams[i] = &stubUpstream{upstreamName: name}
+		upstreams[i] = &mockUpstream{upstreamName: name}
 	}
+
 	return upstreams
 }
 
@@ -240,6 +242,7 @@ func mustParseCIDR(cidr string) *net.IPNet {
 	if err != nil {
 		panic(err)
 	}
+
 	return ipnet
 }
 

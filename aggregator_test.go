@@ -148,7 +148,7 @@ var _ = Describe("Aggregator", func() {
 	Describe("namespace strategy", func() {
 		It("groups responses by upstream name", func() {
 			result := agg.aggregate(
-				stubUpstreams("users", "orders"),
+				mockUpstreams("users", "orders"),
 				[]upstreamResponse{
 					okResponse(`{"id":1}`),
 					okResponse(`{"total":99}`),
@@ -163,7 +163,7 @@ var _ = Describe("Aggregator", func() {
 
 		It("omits failed upstream when best effort", func() {
 			result := agg.aggregate(
-				stubUpstreams("users", "orders"),
+				mockUpstreams("users", "orders"),
 				[]upstreamResponse{
 					okResponse(`{"id":1}`),
 					errResponse(upstreamTimeout),
