@@ -15,7 +15,6 @@ Built with simplicity, performance, and developer-friendly configuration in mind
 ![Docker Pulls](https://img.shields.io/docker/pulls/starwalkn/kono)
 ![GitHub Created At](https://img.shields.io/github/created-at/starwalkn/kono)
 [![GitHub release](https://img.shields.io/github/v/release/starwalkn/kono)](https://github.com/starwalkn/kono/releases)
-[![GitHub stars](https://img.shields.io/github/stars/starwalkn/kono)](https://github.com/starwalkn/kono/stargazers)
 
 ---
 
