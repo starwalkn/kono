@@ -18,6 +18,18 @@ import (
 	"github.com/starwalkn/kono/sdk"
 )
 
+// ── Config helpers ────────────────────────────────────────────────────────────
+
+func testUpstreamConfig(port string) UpstreamConfig {
+	return UpstreamConfig{
+		Name:    "test_service_" + port,
+		Hosts:   AddrList{"test-service:" + port},
+		Path:    "/builder/test",
+		Method:  http.MethodGet,
+		Timeout: 5 * time.Second,
+	}
+}
+
 // ── Upstream stubs ────────────────────────────────────────────────────────────
 
 type stubUpstream struct {
