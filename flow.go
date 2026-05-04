@@ -7,11 +7,11 @@ import (
 )
 
 type flow struct {
-	path                 string
-	method               string
-	aggregation          aggregation
-	maxParallelUpstreams int64
-	upstreams            []upstream
+	path              string
+	method            string
+	aggregation       aggregation
+	parallelUpstreams int64
+	upstreams         []upstream
 
 	plugins     []sdk.Plugin
 	middlewares []sdk.Middleware

@@ -9,7 +9,7 @@ all: clean build plugins
 
 build:
 	mkdir -p .bin
-	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 go build -o .bin/kono ./cmd/kono
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 go build -ldflags="-X 'main.version=v0.3.0'" -o .bin/kono ./cmd/kono
 
 plugins:
 	mkdir -p $(PLUGIN_OUT)
@@ -30,4 +30,4 @@ lint:
 	golangci-lint run
 
 test:
-	go test -v -coverprofile=coverage.out ./...
+	go test -v -coverprofile=coverage.out -ginkgo.v ./...

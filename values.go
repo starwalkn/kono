@@ -8,6 +8,7 @@ const (
 	contextKeyClientIP contextKey = iota
 	contextKeyRequestID
 	contextKeyRoute
+	contextKeyFingerprint
 )
 
 func withClientIP(ctx context.Context, ip string) context.Context {
@@ -35,4 +36,13 @@ func withRoute(ctx context.Context, route string) context.Context {
 func routeFromContext(ctx context.Context) string {
 	route, _ := ctx.Value(contextKeyRoute).(string)
 	return route
+}
+
+func withFingerprint(ctx context.Context, fingerprint string) context.Context {
+	return context.WithValue(ctx, contextKeyFingerprint, fingerprint)
+}
+
+func fingerprintFromContext(ctx context.Context) string {
+	fingerprint, _ := ctx.Value(contextKeyFingerprint).(string)
+	return fingerprint
 }

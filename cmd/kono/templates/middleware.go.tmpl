@@ -1,0 +1,57 @@
+package main
+
+import (
+	"net/http"
+
+	"github.com/starwalkn/kono/sdk"
+)
+
+type Middleware struct {
+	enabled bool
+}
+
+func NewMiddleware() sdk.Middleware {
+	return &Middleware{}
+}
+
+func (m *Middleware) Name() string {
+	return "{{ .Name }}"
+}
+
+func (m *Middleware) Init(cfg map[string]interface{}) error {
+	if val, ok := cfg["enabled"].(bool); ok {
+		m.enabled = val
+	} else {
+		m.enabled = true
+	}
+
+	// TODO: parse additional configuration from cfg
+
+	return nil
+}
+
+func (m *Middleware) Handler(next http.Handler) http.Handler {
+	if !m.enabled {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// TODO: pre-handler logic here
+
+		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		// TODO: post-handler logic here using rec.status
+		_ = rec
+	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}

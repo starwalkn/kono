@@ -4,22 +4,31 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/oklog/ulid/v2"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/starwalkn/kono/internal/metric"
 	"github.com/starwalkn/kono/internal/ratelimit"
+	"github.com/starwalkn/kono/internal/tracing"
 	"github.com/starwalkn/kono/sdk"
 )
 
@@ -37,6 +46,22 @@ var hopByHopHeaders = map[string]struct{}{
 	"Upgrade":             {},
 }
 
+var fingerprintIgnoredHeaders = map[string]struct{}{
+	"User-Agent":        {},
+	"Cookie":            {},
+	"Authorization":     {},
+	"X-Request-Id":      {},
+	"X-Forwarded-For":   {},
+	"X-Forwarded-Proto": {},
+	"X-Forwarded-Host":  {},
+	"X-Forwarded-Port":  {},
+	"X-Real-Ip":         {},
+	"Forwarded":         {},
+	"Host":              {},
+	"Accept-Encoding":   {},
+	"Accept-Language":   {},
+}
+
 type Router struct {
 	chiRouter  *chi.Mux
 	scatter    scatter
@@ -44,7 +69,7 @@ type Router struct {
 	flows      []flow
 
 	log         *zap.Logger
-	metrics     metric.Metrics
+	metrics     *metric.Metrics
 	rateLimiter *ratelimit.RateLimit
 }
 
@@ -64,10 +89,26 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.metrics.IncRequestsInFlight()
 	defer r.metrics.DecRequestsInFlight()
 
+	tracer := otel.Tracer(tracing.TracerName)
+
+	ctx := otel.GetTextMapPropagator().Extract(req.Context(), propagation.HeaderCarrier(req.Header))
+	ctx, span := tracer.Start(ctx, "kono.request",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("http.method", req.Method),
+			attribute.String("url.path", req.URL.Path),
+		),
+	)
+	defer span.End()
+
 	clientIP := extractClientIP(req)
-	req = req.WithContext(withClientIP(req.Context(), clientIP))
+	ctx = withClientIP(ctx, clientIP)
+	req = req.WithContext(ctx)
 
 	if !r.allowRequest(w, clientIP) {
+		span.SetAttributes(attribute.Int("http.status_code", http.StatusTooManyRequests))
+		span.SetStatus(codes.Error, "rate limited")
+
 		return
 	}
 
@@ -111,11 +152,26 @@ func (r *Router) newFlowHandler(f *flow) http.Handler {
 		start := time.Now()
 		defer r.metrics.UpdateRequestsDuration(f.path, f.method, start)
 
-		requestID := getOrCreateRequestID(req)
-		req = req.WithContext(withRequestID(req.Context(), requestID))
-		req = req.WithContext(withRoute(req.Context(), f.path))
+		span := trace.SpanFromContext(req.Context())
+		span.SetAttributes(attribute.String("http.route", f.path))
 
-		log := r.log.With(zap.String("request_id", requestID))
+		requestID := getOrCreateRequestID(req)
+		fingerprint := computeFingerprint(req, f.path)
+
+		ctx := req.Context()
+		ctx = withRoute(withRequestID(withFingerprint(ctx, fingerprint), requestID), f.path)
+
+		req = req.WithContext(ctx)
+
+		span.SetAttributes(
+			attribute.String("kono.request.id", requestID),
+			attribute.String("kono.request.fingerprint", fingerprint),
+		)
+
+		log := r.log.With(
+			zap.String("request_id", requestID),
+			zap.String("fingerprint", fingerprint),
+		)
 
 		if f.passthrough {
 			r.handlePassthrough(w, req, f, log)
@@ -137,7 +193,20 @@ func (r *Router) newFlowHandler(f *flow) http.Handler {
 		}
 
 		if r.log.Core().Enabled(zap.DebugLevel) {
-			r.log.Debug("dispatched responses", zap.Any("responses", upstreamResponses))
+			var ok, failed int
+
+			for _, resp := range upstreamResponses {
+				if resp.err != nil {
+					failed++
+				} else {
+					ok++
+				}
+			}
+
+			r.log.Debug("scatter finished",
+				zap.Int("ok", ok),
+				zap.Int("failed", failed),
+			)
 		}
 
 		httpResp := r.buildResponse(req.Context(), upstreamResponses, f, log)
@@ -157,7 +226,13 @@ func (r *Router) newFlowHandler(f *flow) http.Handler {
 		}
 
 		w.Header().Set("Content-Length", strconv.Itoa(int(finalResp.ContentLength)))
+
 		r.metrics.IncRequestsTotal(f.path, req.Method, finalResp.StatusCode)
+		span.SetAttributes(attribute.Int("http.status_code", finalResp.StatusCode))
+		if finalResp.StatusCode >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(finalResp.StatusCode))
+		}
+
 		r.copyResponse(w, finalResp)
 	})
 }
@@ -166,19 +241,35 @@ func (r *Router) newFlowHandler(f *flow) http.Handler {
 // On the first plugin error it writes a 500 to w and returns false —
 // the caller must treat false as "response already sent, stop processing".
 func (r *Router) executePlugins(pluginType sdk.PluginType, w http.ResponseWriter, kctx sdk.Context, f *flow, log *zap.Logger) bool {
+	tracer := otel.Tracer(tracing.TracerName)
+
 	for _, p := range f.plugins {
 		if p.Type() != pluginType {
 			continue
 		}
 
 		log.Debug("executing plugin",
-			zap.String("type", pluginPhaseName(pluginType)),
+			zap.String("type", pluginType.String()),
 			zap.String("name", p.Info().Name),
 		)
 
-		if err := p.Execute(kctx); err != nil {
+		ctx, span := tracer.Start(kctx.Request().Context(), "kono.plugin",
+			trace.WithAttributes(
+				attribute.String("kono.plugin.name", p.Info().Name),
+				attribute.String("kono.plugin.type", pluginType.String()),
+			),
+		)
+
+		kctx.SetRequest(kctx.Request().WithContext(ctx))
+		err := p.Execute(kctx)
+		span.End()
+
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "plugin execution failed")
+
 			log.Error("plugin execution failed",
-				zap.String("type", pluginPhaseName(pluginType)),
+				zap.String("type", pluginType.String()),
 				zap.String("name", p.Info().Name),
 				zap.Error(err),
 			)
@@ -200,16 +291,18 @@ func (r *Router) buildResponse(ctx context.Context, upstreamResponses []upstream
 	}
 
 	requestID := requestIDFromContext(ctx)
+	fingerprint := fingerprintFromContext(ctx)
 
 	headers.Set("X-Request-ID", requestID)
+	headers.Set("X-Request-Fingerprint", fingerprint)
 	headers.Set("Content-Type", "application/json; charset=utf-8")
 
-	if log.Core().Enabled(zap.DebugLevel) {
-		log.Debug("aggregated responses",
-			zap.String("strategy", f.aggregation.strategy.String()),
-			zap.Any("aggregated", aggregated),
-		)
-	}
+	log.Debug("aggregation finished",
+		zap.String("strategy", f.aggregation.strategy.String()),
+		zap.Int("data_bytes", len(aggregated.data)),
+		zap.Int("errors", len(aggregated.errors)),
+		zap.Bool("partial", aggregated.partial),
+	)
 
 	status := r.statusFromErrors(aggregated.errors, aggregated.partial)
 	body := r.buildResponseBody(aggregated, requestID)
@@ -356,6 +449,44 @@ func getOrCreateRequestID(r *http.Request) string {
 	return strings.ToLower(ulid.MustNew(ulid.Timestamp(time.Now()), globalEntropy).String())
 }
 
+func computeFingerprint(r *http.Request, flowPath string) string {
+	var b strings.Builder
+
+	b.WriteString(r.Method)
+	b.WriteByte('|')
+	b.WriteString(flowPath)
+	b.WriteByte('|')
+
+	headers := make([]string, 0, len(r.Header))
+	for name := range r.Header {
+		if _, skip := fingerprintIgnoredHeaders[name]; skip {
+			continue
+		}
+
+		headers = append(headers, name)
+	}
+
+	sort.Strings(headers)
+	b.WriteString(strings.Join(headers, ","))
+	b.WriteByte('|')
+
+	if r.URL.RawQuery != "" {
+		qs := r.URL.Query()
+
+		queries := make([]string, 0, len(qs))
+		for name := range qs {
+			queries = append(queries, name)
+		}
+
+		sort.Strings(queries)
+		b.WriteString(strings.Join(queries, ","))
+	}
+
+	sum := sha256.Sum256([]byte(b.String()))
+
+	return hex.EncodeToString(sum[:8])
+}
+
 const (
 	errPriorityRateLimit   = 100
 	errPriorityPayloadSize = 90
@@ -381,15 +512,4 @@ func errorPriority(e ClientError) int {
 	}
 
 	return 0
-}
-
-func pluginPhaseName(phase sdk.PluginType) string {
-	switch phase {
-	case sdk.PluginTypeRequest:
-		return "request"
-	case sdk.PluginTypeResponse:
-		return "response"
-	default:
-		return "unknown"
-	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -32,12 +33,12 @@ func (p *Plugin) Type() sdk.PluginType {
 	return sdk.PluginTypeResponse
 }
 
-func (p *Plugin) Init(cfg map[string]interface{}) {
+func (p *Plugin) Init(cfg map[string]interface{}) error {
 	p.fields = make(map[string]struct{})
 
 	raw, ok := cfg["fields"].([]interface{})
 	if !ok {
-		return
+		return errors.New("fields must be an array")
 	}
 
 	for _, v := range raw {
@@ -45,6 +46,8 @@ func (p *Plugin) Init(cfg map[string]interface{}) {
 			p.fields[field] = struct{}{}
 		}
 	}
+
+	return nil
 }
 
 func (p *Plugin) Execute(ctx sdk.Context) error {

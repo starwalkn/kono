@@ -11,11 +11,22 @@ import (
 	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 )
+
+const MeterName = "kono"
 
 const defaultMetricsInterval = 60 * time.Second
 
-type otelMetrics struct {
+type FailReason string
+
+const (
+	FailReasonNoMatchedFlow   FailReason = "no_matched_flow"
+	FailReasonBodyTooLarge    FailReason = "body_too_large"
+	FailReasonTooManyRequests FailReason = "too_many_requests"
+)
+
+type Metrics struct {
 	requestsTotal         otelmetric.Int64Counter
 	requestsDuration      otelmetric.Float64Histogram
 	requestsInFlight      otelmetric.Int64UpDownCounter
@@ -27,7 +38,89 @@ type otelMetrics struct {
 	circuitBreakerState   otelmetric.Float64Gauge
 }
 
-func NewOtelPrometheus() (Metrics, *prometheus.Registry, error) {
+func New() (*Metrics, error) {
+	meter := otel.Meter(MeterName)
+	m := &Metrics{}
+
+	var err error
+
+	m.requestsTotal, err = meter.Int64Counter("kono.requests.total",
+		otelmetric.WithDescription("Total number of incoming requests"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.requestsDuration, err = meter.Float64Histogram(
+		"kono.requests.duration",
+		otelmetric.WithDescription("End-to-end request duration in seconds"),
+		otelmetric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.requestsInFlight, err = meter.Int64UpDownCounter(
+		"kono.requests.in_flight",
+		otelmetric.WithDescription("Current number of in-flight requests"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.failedRequestsTotal, err = meter.Int64Counter(
+		"kono.failed_requests.total",
+		otelmetric.WithDescription("Total number of requests rejected before flow processing"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.upstreamLatency, err = meter.Float64Histogram(
+		"kono.upstream.latency",
+		otelmetric.WithDescription("Upstream response latency in seconds"),
+		otelmetric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.upstreamRequestsTotal, err = meter.Int64Counter(
+		"kono.upstream.requests.total",
+		otelmetric.WithDescription("Total number of requests dispatched to upstreams"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.upstreamErrorsTotal, err = meter.Int64Counter(
+		"kono.upstream.errors.total",
+		otelmetric.WithDescription("Total number of upstream errors by kind"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.upstreamRetriesTotal, err = meter.Int64Counter(
+		"kono.upstream.retries.total",
+		otelmetric.WithDescription("Total number of upstream retry attempts"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.circuitBreakerState, err = meter.Float64Gauge(
+		"kono.circuit_breaker.state",
+		otelmetric.WithDescription("Circuit breaker state: 0=closed, 1=open, 2=half-open"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+func NewOtelPrometheus(res *resource.Resource) (*sdkmetric.MeterProvider, *prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
 
 	exporter, err := otelprometheus.New(otelprometheus.WithRegisterer(reg))
@@ -35,18 +128,19 @@ func NewOtelPrometheus() (Metrics, *prometheus.Registry, error) {
 		return nil, nil, err
 	}
 
-	provider := newMeterProvider(exporter)
+	provider := newMeterProvider(exporter, res)
 	otel.SetMeterProvider(provider)
 
-	m, err := newInstruments(provider)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return m, reg, nil
+	return provider, reg, nil
 }
 
-func NewOtelOTLP(endpoint string, insecure bool, interval time.Duration) (Metrics, *sdkmetric.MeterProvider, error) {
+func NewOtelOTLP(
+	ctx context.Context,
+	endpoint string,
+	insecure bool,
+	interval time.Duration,
+	res *resource.Resource,
+) (*sdkmetric.MeterProvider, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpoint(endpoint),
 	}
@@ -54,9 +148,9 @@ func NewOtelOTLP(endpoint string, insecure bool, interval time.Duration) (Metric
 		opts = append(opts, otlpmetrichttp.WithInsecure())
 	}
 
-	exporter, err := otlpmetrichttp.New(context.Background(), opts...)
+	exporter, err := otlpmetrichttp.New(ctx, opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if interval == 0 {
@@ -64,15 +158,15 @@ func NewOtelOTLP(endpoint string, insecure bool, interval time.Duration) (Metric
 	}
 
 	reader := sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(interval))
-	provider := newMeterProvider(reader)
+	provider := newMeterProvider(reader, res)
 	otel.SetMeterProvider(provider)
 
-	m, err := newInstruments(provider)
-	return m, provider, err
+	return provider, nil
 }
 
-func newMeterProvider(reader sdkmetric.Reader) *sdkmetric.MeterProvider {
+func newMeterProvider(reader sdkmetric.Reader, res *resource.Resource) *sdkmetric.MeterProvider {
 	return sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithView(
 			sdkmetric.NewView(
@@ -95,90 +189,7 @@ func newMeterProvider(reader sdkmetric.Reader) *sdkmetric.MeterProvider {
 	)
 }
 
-func newInstruments(provider *sdkmetric.MeterProvider) (*otelMetrics, error) {
-	meter := provider.Meter("kono")
-
-	m := &otelMetrics{}
-
-	var initErr error
-
-	m.requestsTotal, initErr = meter.Int64Counter("kono.requests.total",
-		otelmetric.WithDescription("Total number of incoming requests"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.requestsDuration, initErr = meter.Float64Histogram(
-		"kono.requests.duration",
-		otelmetric.WithDescription("End-to-end request duration in seconds"),
-		otelmetric.WithUnit("s"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.requestsInFlight, initErr = meter.Int64UpDownCounter(
-		"kono.requests.in_flight",
-		otelmetric.WithDescription("Current number of in-flight requests"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.failedRequestsTotal, initErr = meter.Int64Counter(
-		"kono.failed_requests.total",
-		otelmetric.WithDescription("Total number of requests rejected before flow processing"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.upstreamLatency, initErr = meter.Float64Histogram(
-		"kono.upstream.latency",
-		otelmetric.WithDescription("Upstream response latency in seconds"),
-		otelmetric.WithUnit("s"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.upstreamRequestsTotal, initErr = meter.Int64Counter(
-		"kono.upstream.requests.total",
-		otelmetric.WithDescription("Total number of requests dispatched to upstreams"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.upstreamErrorsTotal, initErr = meter.Int64Counter(
-		"kono.upstream.errors.total",
-		otelmetric.WithDescription("Total number of upstream errors by kind"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.upstreamRetriesTotal, initErr = meter.Int64Counter(
-		"kono.upstream.retries.total",
-		otelmetric.WithDescription("Total number of upstream retry attempts"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	m.circuitBreakerState, initErr = meter.Float64Gauge(
-		"kono.circuit_breaker.state",
-		otelmetric.WithDescription("Circuit breaker state: 0=closed, 1=open, 2=half-open"),
-	)
-	if initErr != nil {
-		return nil, initErr
-	}
-
-	return m, nil
-}
-
-func (m *otelMetrics) IncRequestsTotal(route, method string, status int) {
+func (m *Metrics) IncRequestsTotal(route, method string, status int) {
 	m.requestsTotal.Add(context.Background(), 1,
 		otelmetric.WithAttributes(
 			attribute.String("route", route),
@@ -188,7 +199,7 @@ func (m *otelMetrics) IncRequestsTotal(route, method string, status int) {
 	)
 }
 
-func (m *otelMetrics) UpdateRequestsDuration(route, method string, start time.Time) {
+func (m *Metrics) UpdateRequestsDuration(route, method string, start time.Time) {
 	m.requestsDuration.Record(context.Background(),
 		time.Since(start).Seconds(),
 		otelmetric.WithAttributes(
@@ -198,15 +209,15 @@ func (m *otelMetrics) UpdateRequestsDuration(route, method string, start time.Ti
 	)
 }
 
-func (m *otelMetrics) IncRequestsInFlight() {
+func (m *Metrics) IncRequestsInFlight() {
 	m.requestsInFlight.Add(context.Background(), 1)
 }
 
-func (m *otelMetrics) DecRequestsInFlight() {
+func (m *Metrics) DecRequestsInFlight() {
 	m.requestsInFlight.Add(context.Background(), -1)
 }
 
-func (m *otelMetrics) IncFailedRequestsTotal(reason FailReason) {
+func (m *Metrics) IncFailedRequestsTotal(reason FailReason) {
 	m.failedRequestsTotal.Add(context.Background(), 1,
 		otelmetric.WithAttributes(
 			attribute.String("reason", string(reason)),
@@ -214,7 +225,7 @@ func (m *otelMetrics) IncFailedRequestsTotal(reason FailReason) {
 	)
 }
 
-func (m *otelMetrics) UpdateUpstreamLatency(route, upstream string, start time.Time) {
+func (m *Metrics) UpdateUpstreamLatency(route, upstream string, start time.Time) {
 	m.upstreamLatency.Record(context.Background(),
 		time.Since(start).Seconds(),
 		otelmetric.WithAttributes(
@@ -224,7 +235,7 @@ func (m *otelMetrics) UpdateUpstreamLatency(route, upstream string, start time.T
 	)
 }
 
-func (m *otelMetrics) IncUpstreamRequestsTotal(route, upstream string) {
+func (m *Metrics) IncUpstreamRequestsTotal(route, upstream string) {
 	m.upstreamRequestsTotal.Add(context.Background(), 1,
 		otelmetric.WithAttributes(
 			attribute.String("route", route),
@@ -233,7 +244,7 @@ func (m *otelMetrics) IncUpstreamRequestsTotal(route, upstream string) {
 	)
 }
 
-func (m *otelMetrics) IncUpstreamErrorsTotal(route, upstream, kind string) {
+func (m *Metrics) IncUpstreamErrorsTotal(route, upstream, kind string) {
 	m.upstreamErrorsTotal.Add(context.Background(), 1,
 		otelmetric.WithAttributes(
 			attribute.String("route", route),
@@ -243,7 +254,7 @@ func (m *otelMetrics) IncUpstreamErrorsTotal(route, upstream, kind string) {
 	)
 }
 
-func (m *otelMetrics) IncUpstreamRetriesTotal(route, upstream string) {
+func (m *Metrics) IncUpstreamRetriesTotal(route, upstream string) {
 	m.upstreamRetriesTotal.Add(context.Background(), 1,
 		otelmetric.WithAttributes(
 			attribute.String("route", route),
@@ -252,7 +263,7 @@ func (m *otelMetrics) IncUpstreamRetriesTotal(route, upstream string) {
 	)
 }
 
-func (m *otelMetrics) SetCircuitBreakerState(upstream string, state float64) {
+func (m *Metrics) SetCircuitBreakerState(upstream string, state float64) {
 	m.circuitBreakerState.Record(context.Background(), state,
 		otelmetric.WithAttributes(
 			attribute.String("upstream", upstream),
