@@ -252,11 +252,7 @@ func newValidator() *validator.Validate {
 	return v
 }
 
-var pathParamPattern = regexp.MustCompile(`\{
-([^
-}]+)\
-}
-`)
+var pathParamPattern = regexp.MustCompile(`\{([^}]+)\}`)
 
 func validatePathParams(cfg Config) error {
 	for _, f := range cfg.Gateway.Routing.Flows {
